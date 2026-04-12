@@ -1,0 +1,1396 @@
+// The Tofita Engine
+// Copyright (C) 2022-2025 Oleh Petrenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// Performs screen composition of all user interface
+
+// Note: ACCURACY is PREFERRED over SPEED, that's why we do full 2D composition even without GPU
+
+// Differential composition is not yet supported, performance with large amount of apps may be low
+
+// TODO Hexa: `null!`
+var wallpaper Bitmap32 = null // Size of framebuffer
+var vibranceLight Bitmap32 = null // Size of framebuffer
+var vibranceDark Bitmap32 = null // Size of framebuffer
+var gura Bitmap32 = null
+var leaves Bitmap32 = null
+var leaves16 Bitmap32 = null
+var leaves16white Bitmap32 = null
+var trashCan Bitmap32 = null
+var notepad16 Bitmap32 = null
+var notepad48 Bitmap32 = null
+var folder48 Bitmap32 = null
+var files48 Bitmap32 = null
+var dll48 Bitmap32 = null
+var unknown48 Bitmap32 = null
+var prompt48 Bitmap32 = null
+var picture48 Bitmap32 = null
+var app48 Bitmap32 = null
+var app32 Bitmap32 = null
+var app16 Bitmap32 = null
+var link Bitmap32 = null
+var startUserIcon Bitmap32 = null
+var startGearIcon Bitmap32 = null
+var startDownloadsIcon Bitmap32 = null
+var startGalleryIcon Bitmap32 = null
+var startPowerIcon Bitmap32 = null
+var startFilesIcon Bitmap32 = null
+var startSearchIcon Bitmap32 = null
+var startSearchOutIcon Bitmap32 = null
+var traySearchIcon Bitmap32 = null
+var trayVolume Bitmap32 = null
+var trayWifi Bitmap32 = null
+var cur Cursor = null
+var darkTheme Bool = true
+var startupAnimation UInt16 = 0
+var desktopFilesList [String] = []
+var pinnedFilesList [String] = []
+let desktopShortcuts [Shortcut] = []
+let startShortcuts [Shortcut] = []
+var versionText = ""
+
+enum WallpaperStyle : UInt8 {
+	Center
+	Stretch
+	Fill
+	// TODO more options
+}
+
+fun setWallpaper(bitmap Bitmap32, style WallpaperStyle, preserveAspectRatio Bool = true) {
+	var bitmap = bitmap
+
+	{
+		serialPrintln("[compositor.setWallpaper] upscale wallpaper to screen size")
+		// let smallestSide Float = bitmap.width > bitmap.height? bitmap.height : bitmap.width
+		// let largestSide Float = _framebuffer.width < _framebuffer.height? _framebuffer.height : _framebuffer.width
+		// var scaler = largestSide / smallestSide
+
+		var scaler = 1.0
+		var scalerY = 1.0
+
+		if _framebuffer.width > bitmap.width {
+			// TODO just use float / division not \
+			// TODO lmao not works in code gen `scaler = (_framebuffer.width as Float) / (bitmap.width as Float)`
+			// TODO 123.toFloat without `()` and toFloat32 for compatible sizes
+			scaler = (_framebuffer.width as! Float) / (bitmap.width as! Float)
+		}
+
+		if _framebuffer.height > bitmap.height {
+			// TODO just use float / division not \
+			scalerY = (_framebuffer.height as! Float) / (bitmap.height as! Float)
+		}
+
+		// TODO more to Theme and re-scale on-demand
+		if not preserveAspectRatio {
+			scaler = 1.0
+		} else {
+			if scalerY > scaler {
+				scaler = scalerY
+			}
+		}
+
+		let newWidth = (bitmap.width * scaler * 0 + 1088) as! UInt32
+		let newWidth = (bitmap.width * scaler) as! UInt32
+		let newHeight = (bitmap.height * scaler * 0 + 1088) as! UInt32
+		let newHeight = (bitmap.height * scaler) as! UInt32
+
+		// serialPrintf("%d %d", bitmap.width, bitmap.height)
+		// serialPrintf("%d %d", newWidth, newHeight)
+
+		// var upscale Bitmap32 = allocateBitmap(_framebuffer.width, _framebuffer.height)
+		var upscale Bitmap32 = allocateBitmap(newWidth, newHeight)
+
+		// let hReciprocal = 1.0f32 / (_framebuffer.height as! Float32)
+		let hReciprocal = 1.0f32 / (newHeight as! Float32)
+		// let wReciprocal = 1.0f32 / (_framebuffer.width as! Float32)
+		let wReciprocal = 1.0f32 / (newWidth as! Float32)
+
+		// TODO don't interpolate if size the same as the screen
+		// TODO rename _framebuffer to `Screen.` elsewhere
+		for y in upscale.height {
+			for x in upscale.width {
+				let rgba = interpolatePixel(
+					bitmap,
+					(x * wReciprocal) * bitmap.width as! Float32, // TODO `as! _` or something
+					(y * hReciprocal) * (bitmap.height - 8) as! Float32
+				)
+				upscale.pixels[y * upscale.width + x].ref.rgba.ref.r = rgba.ref.r
+				upscale.pixels[y * upscale.width + x].ref.rgba.ref.g = rgba.ref.g
+				upscale.pixels[y * upscale.width + x].ref.rgba.ref.b = rgba.ref.b
+			}
+		}
+
+		wallpaper = upscale
+		bitmap = wallpaper
+	}
+
+	var blurScale UInt8 = 8
+
+	// TODO blur is at wrong position due to centering after rescale
+	// it must be offset and than crop to the screen too
+	var downscale Bitmap32 = allocateBitmap(
+		bitmap.width / blurScale - 1u32, // TODO infer int types, also integer division
+		bitmap.height / blurScale - 1u32 + 8
+	)
+
+	for y in downscale.height - 8 {
+		for x in downscale.width {
+			downscale.pixels[y * downscale.width + x].ref.color =
+				bitmap.pixels[y * bitmap.width * blurScale + x * blurScale].ref.color
+		}
+	}
+
+	// Fix
+	for y in downscale.height - 8 ... downscale.height {
+		for x in downscale.width {
+			downscale.pixels[y * downscale.width + x].ref.color =
+				bitmap.pixels[bitmap.width * (bitmap.height - 1) + x * blurScale].ref.color
+		}
+	}
+	// TODO Theme.greyScale
+	// ^ also affect icons and previews optionally
+
+	// TODO fix blur for small wallpapers (centered smaller than screen)
+	var blur Bitmap32 = gaussBlur(downscale, 4)
+
+	// Upscale
+	// TODO half-res rendering of vibrance by default
+	// TODO add noise
+	var upscaleLight Bitmap32 = allocateBitmap(bitmap.width, bitmap.height)
+	var upscaleDark Bitmap32 = allocateBitmap(bitmap.width, bitmap.height)
+	var upscale Bitmap32 = upscaleDark
+
+	let hReciprocal = 1.0f32 / (upscale.height as! Float32)
+	let wReciprocal = 1.0f32 / (upscale.width as! Float32)
+
+	if justBlur {
+		for y in upscale.height as! UInt64 {
+			for x in upscale.width as! UInt64 {
+				let rgbaSource =
+					interpolatePixel(
+					downscale,
+					(x * wReciprocal) * downscale.width as! Float32, // TODO UInt32 is precise than Float32
+					(y * hReciprocal) * (downscale.height - 8) as! Float32
+					// TODO disallowed in C `).ref as! Pixel32`
+					// TODO disallowed in C `) as! ByValue<Pixel32>`
+				)
+
+				let rgbaSource = rgbaSource as! ByValue<Pixel32>
+
+				// TODO Hexa: [x, y]
+				upscaleDark.pixels[y * upscale.width + x].ref.color = rgbaSource.ref.color
+				upscaleLight.pixels[y * upscale.width + x].ref.color = rgbaSource.ref.color
+			}
+		}
+
+		vibranceDark = upscaleDark
+		vibranceLight = upscaleLight
+		return
+	}
+
+	// Upscale blurred wallpaper to the screen shize and apply vibrance effect
+	// ............nooo TODO do not upscale if not needed
+	for y in upscale.height as! UInt64 {
+		let preMultipliedY = y * hReciprocal
+
+		for x in upscale.width as! UInt64 {
+			let rgbaSource =
+				interpolatePixel(
+				downscale,
+				(x * wReciprocal) * downscale.width as! Float32, // TODO UInt32 is precise than Float32
+				preMultipliedY * (downscale.height - 8) as! Float32
+			)
+
+			// Apply vibrance (frosted glass)
+			// 0.66*255 = 168.3
+			/// rgba.r = Blend255(rgba.r, 255, 168)
+			/// rgba.g = Blend255(rgba.g, 255, 168)
+			/// rgba.b = Blend255(rgba.b, 255, 168)
+
+			{
+				var rgba = rgbaSource
+				var rgba = rgba.ref
+				rgba.r = blend255(rgba.r, 0, 168)
+				rgba.g = blend255(rgba.g, 0, 168)
+				rgba.b = blend255(rgba.b, 0, 168)
+				// TODO upscaleDark.pixels[y * upscale.width + x].ref.rgba = rgba
+				upscaleDark.pixels[y * upscale.width + x].ref.rgba.ref.r = rgba.r
+				upscaleDark.pixels[y * upscale.width + x].ref.rgba.ref.g = rgba.g
+				upscaleDark.pixels[y * upscale.width + x].ref.rgba.ref.b = rgba.b
+			}
+
+			{
+				var rgba = rgbaSource
+				var rgba = rgba.ref
+				rgba.r = blend255(rgba.r, 255, 168)
+				rgba.g = blend255(rgba.g, 255, 168)
+				rgba.b = blend255(rgba.b, 255, 168)
+				// TODO upscaleLight.pixels[y * upscale.width + x].ref.rgba = rgba
+				upscaleLight.pixels[y * upscale.width + x].ref.rgba.ref.r = rgba.r
+				upscaleLight.pixels[y * upscale.width + x].ref.rgba.ref.g = rgba.g
+				upscaleLight.pixels[y * upscale.width + x].ref.rgba.ref.b = rgba.b
+			}
+		}
+	}
+
+	vibranceDark = upscaleDark
+	vibranceLight = upscaleLight
+}
+
+// TODO rename to `drawVibranceRectangle`
+// NOTE this is NOT a frosted glass effect (as it lack noise)
+fun drawVibrancedRectangle(x Int16, y Int16, width UInt16, height UInt16, dark Bool = true) {
+	let vibrance = dark ? vibranceDark : vibranceLight // Avoid non-register global access
+	for yy in height {
+		for xx in width {
+			if x + xx < 0 {
+				continue
+			}
+			if x + xx > vibrance.width {
+				continue
+			}
+			if y + yy < 0 {
+				continue
+			}
+			if y + yy > vibrance.height {
+				continue
+			}
+			var pixel UInt32 = (y + yy) * vibrance.width + xx + x as! UInt32
+			setPixel(x + xx, y + yy, vibrance.pixels[pixel])
+		}
+	}
+}
+
+fun initializeCompositor() {
+	serialPrintln("[compositor.initializeCompositor] begin")
+	// TODO must require `*=` and not `* =` for assign-ops
+	Screen.doublebuffer = allocateBitmap(_framebuffer.width, _framebuffer.height)
+	_pixels = Screen.doublebuffer.pixels
+
+	Screen.pixels = Screen.doublebuffer.pixels
+	Screen.width = Screen.doublebuffer.width
+	Screen.height = Screen.doublebuffer.height
+	Screen.widthMinusOne = Screen.doublebuffer.width - 1
+	Screen.heightMinusOne = Screen.doublebuffer.height - 1
+
+	// Start
+
+	// TODO helper function that simply does `loadBitmapFromPath()` and on fail sets default 16x16 and quakes
+	// ^ autodetect format from extension (ico, png, bmp, etc)
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/user.png")
+	startUserIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/gear.png")
+	startGearIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/downloads.png")
+	startDownloadsIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/gallery.png")
+	startGalleryIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/power.png")
+	startPowerIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/files.png")
+	startFilesIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/search.png")
+	startSearchIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/pip.png")
+	startSearchOutIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/leavesWhite.png")
+	leaves = loadPng32(a)
+
+	let a = getRamDiskAsset("desktop/gura.png")
+	gura = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/leaves16.png")
+	leaves16 = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/leaves16white.png")
+	leaves16white = loadPng32(a)
+
+	// Tray
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Start/find.png")
+	traySearchIcon = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Tray/volume.png")
+	trayVolume = loadPng32(a)
+
+	let a = getRamDiskAsset("root/Windows/Resources/Icons/Tray/wifi.png")
+	trayWifi = loadPng32(a)
+
+	// Desktop
+
+	let b = getRamDiskAsset("root/Windows/Resources/Icons/trash.png")
+	trashCan = loadPng32(b)
+
+	let c = getRamDiskAsset("root/Windows/Resources/Icons/Beautiful/paper_3.png")
+	notepad48 = loadPng32(c)
+
+	let d = getRamDiskAsset("root/Windows/Resources/Icons/Beautiful/paper_2_16.png")
+	notepad16 = loadPng32(d)
+
+	let e = getRamDiskAsset("root/Windows/Resources/Icons/link.png")
+	link = loadPng32(e)
+
+	let e = getRamDiskAsset("root/Windows/Resources/Icons/256_image-x-generic.ico")
+	picture48 = loadIcon(e.data as! ConstArrayPointer<UInt8>, 48)
+
+	// TODO `getRamDiskAsset` should be null-safe!!! cause forgot to add asset sometimes
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/Beautiful/app32.png")
+	app32 = loadPng32(asset)
+
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/Conservative/folder48.png")
+	folder48 = loadPng32(asset)
+
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/Beautiful/folder(1).png")
+	files48 = loadPng32(asset)
+
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/Beautiful/app.png")
+	prompt48 = loadPng32(asset)
+
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/unknown48.png")
+	unknown48 = loadPng32(asset)
+
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/dll48.png")
+	dll48 = loadPng32(asset)
+
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/Beautiful/app4.png")
+	app48 = loadPng32(asset)
+
+	let asset = getRamDiskAsset("root/Windows/Resources/Icons/app16.png")
+	app16 = loadPng32(asset)
+
+	// TODO move all those assets to desktop.hexa ^ taskbar.hexa
+
+	let asset = getRamDiskAsset("desktop" + '\r')
+	{
+		// var length = 0
+		// var at = 0u64 // TODO should work with 0u32 too
+		// for i in asset.size {
+		// // TODO `'\n'.charCodeAt(0)`
+		// // if i % 2 == 1 and asset.data[i] == 10 {
+		// if (i % 2 == 0) and (asset.data[i] == 10) {
+		// let offset = (asset.data as! UInt64) + at + 0u64
+		// let file = String.fromUTF16zUpTo(offset as! ConstArrayPointer<UInt16>, length / 2)
+		// at = i + 2u64
+		// length = 0
+		// desktopFilesList.push(file)
+		// } else {
+		// length++
+		// }
+		// }
+		desktopFilesList = getRamDiskFolder(asset)
+
+		// TODO separate list for Start
+		pinnedFilesList = desktopFilesList
+		let yOffset = 12i16 + 48i16 + 10i16 + 4i16 + 16i16
+		let yOffsetDefault = 10i16
+		var yu = yOffsetDefault
+		var xu = 0i16
+		let h = 76i16
+
+		// Add default desktop icons
+		let shortcut = new Shortcut()
+		shortcut.displayName = "Files"
+		shortcut.file = "*:files"
+		shortcut.icon = files48
+		let rectangle = new ColliderRectangle(desktopShortcuts.length, desktopShortcutHandler)
+		shortcut.rectangle = rectangle
+		desktopShortcuts.push(shortcut)
+		defaultSession.desktopZone.children.push(rectangle)
+
+		rectangle.relativeX = xu
+		rectangle.relativeY = yu
+		yu += yOffset
+		shortcut.rectangle.width = 76i16
+		shortcut.rectangle.height = h
+		shortcut.rectangle.hint = hintOfFile
+
+		// Add to Start too
+		let shortcut = new Shortcut()
+		shortcut.displayName = "Files"
+		shortcut.file = "*:files"
+		shortcut.icon = files48
+		let rectangle = new ColliderRectangle(startShortcuts.length, startPinHandler)
+		shortcut.rectangle = rectangle
+		startShortcuts.push(shortcut)
+		defaultSession.startPins.children.push(rectangle)
+		shortcut.rectangle.hint = hintOfPin
+
+		let shortcut = new Shortcut()
+		shortcut.displayName = "Command Prompt"
+		shortcut.file = "*:quake"
+		shortcut.icon = prompt48
+		let rectangle = new ColliderRectangle(startShortcuts.length, startPinHandler)
+		shortcut.rectangle = rectangle
+		startShortcuts.push(shortcut)
+		defaultSession.startPins.children.push(rectangle)
+		shortcut.rectangle.hint = hintOfPin
+
+		// Continue adding to desktop
+		let shortcut = new Shortcut()
+		shortcut.displayName = "Recycle Bin"
+		shortcut.file = "*:trash"
+		shortcut.icon = trashCan
+		let rectangle = new ColliderRectangle(desktopShortcuts.length, desktopShortcutHandler)
+		shortcut.rectangle = rectangle
+		desktopShortcuts.push(shortcut)
+		defaultSession.desktopZone.children.push(rectangle)
+
+		rectangle.relativeX = xu
+		rectangle.relativeY = yu
+		yu += yOffset
+		shortcut.rectangle.width = 76i16
+		shortcut.rectangle.height = h
+		shortcut.rectangle.hint = hintOfFile
+
+		let shortcut = new Shortcut()
+		shortcut.displayName = "Command Prompt"
+		shortcut.file = "*:quake"
+		shortcut.icon = prompt48
+		shortcut.link = true
+		let rectangle = new ColliderRectangle(desktopShortcuts.length, desktopShortcutHandler)
+		shortcut.rectangle = rectangle
+		desktopShortcuts.push(shortcut)
+		defaultSession.desktopZone.children.push(rectangle)
+
+		rectangle.relativeX = xu
+		rectangle.relativeY = yu
+		yu += yOffset
+		shortcut.rectangle.width = 76i16
+		shortcut.rectangle.height = h
+		shortcut.rectangle.hint = hintOfFile
+
+		// Fill the files
+		for i in desktopFilesList.length {
+			let file = desktopFilesList[i]
+
+			let shortcut = new Shortcut()
+			shortcut.displayName = file
+			shortcut.file = "desktop/" + file
+			shortcut.icon = unknown48
+			let rectangle = new ColliderRectangle(desktopShortcuts.length, desktopShortcutHandler)
+			shortcut.rectangle = rectangle
+
+			rectangle.relativeX = xu
+			rectangle.relativeY = yu
+			// TODO Hexa: must work `yu += 32`
+			// `yu += 32i16`
+			yu += yOffset
+			rectangle.width = 76i16
+			rectangle.height = h
+			rectangle.hint = hintOfFile
+
+			let taskbarHeight = 30 // TODO
+			if (yu + yOffset) > (_framebuffer.height - taskbarHeight) {
+				// TODO should work yu = 10 but not -10 for unsigned
+				yu = yOffsetDefault
+				xu += yOffset
+			}
+
+			// TODO `\r`
+			if file.utf16()[file.length - 1] as! UInt16 == 13u16 {
+				// TODO substr folder flag
+				shortcut.icon = folder48
+			} else {
+				// TODO Hexa: write test case `if file.utf16()[file.length - 1] as! UInt16 == 101 {`
+				// TODO case insensitive
+				if file.endsWith(".exe") {
+					// TODO read real icon
+					shortcut.icon = app48
+					// Name without `.exe` part TODO theme-configurable
+					// displayName = displayName.substr(0, displayName.length - 4)
+					// if let icon = getExeIconFromPath(shortcut.file) {
+					// // TODO Hexa: `?? app48`
+					// shortcut.icon = icon
+					// }
+					let icon = getExeIconFromPath(shortcut.file)
+					if icon != null {
+						shortcut.icon = icon as! Bitmap32
+					}
+				} else if file.endsWith(".dll") {
+					// TODO read real icon (some .dll files have them)
+					shortcut.icon = dll48
+				} else {
+					// TODO real preview for pics
+					if file.endsWith(".md") or file.endsWith(".txt") {
+						shortcut.icon = notepad48
+					} else if file.endsWith(".ico") or file.endsWith(".png") or file.endsWith(".jpg") {
+						shortcut.icon = picture48
+					} else if file.endsWith(".lnk") {
+						shortcut.link = true
+						// Name without `.lnk` part
+						shortcut.displayName = shortcut.displayName.substr(0, shortcut.displayName.length - 4)
+						// TODO get icon for pointed file
+						if shortcut.displayName.endsWith(".exe") {
+							shortcut.icon = app48
+						} else {
+							// TODO icon of pointed file
+						}
+					}
+				}
+			}
+
+			// TODO compute sizes here
+			desktopShortcuts.push(shortcut)
+			defaultSession.desktopZone.children.push(rectangle)
+
+			// Set as pin
+			let pin = new Shortcut()
+			pin.displayName = shortcut.displayName
+			pin.file = shortcut.file
+			pin.icon = shortcut.icon
+			let rectangle = new ColliderRectangle(startShortcuts.length, startPinHandler)
+			pin.rectangle = rectangle
+			startShortcuts.push(pin)
+			defaultSession.startPins.children.push(rectangle)
+			pin.rectangle.hint = hintOfPin
+			// TODO compute sizes here
+		}
+	}
+
+	let asset = getRamDiskAsset("root/Windows/Cursors/aero_arrow.cur")
+	// TODO cur = loadCursor(Buffer.fromBytes(asset.data))
+	cur = loadCursor(asset)
+	initCursorBackplate()
+
+	serialPrintln("[compositor.initializeCompositor] done")
+	// Initialize Widgets
+	{
+		let w1 = new Widget()
+		w1.title = "Weather"
+		w1.content = "22°C Sunny"
+		w1.width = 120
+		w1.height = 100
+		startWidgets.push(w1)
+
+		let w2 = new Widget()
+		w2.title = "Battery"
+		w2.content = "85% Charging"
+		w2.width = 120
+		w2.height = 100
+		startWidgets.push(w2)
+
+		let w3 = new Widget()
+		w3.title = "System"
+		w3.content = "CPU: 12% RAM: 2.4GB"
+		w3.width = 252
+		w3.height = 100
+		startWidgets.push(w3)
+	}
+
+	serialPrintln("[compositor.initializeCompositor] done")
+}
+
+/// Draw windows
+// TODO partial composition
+fun compositeWindows() {
+	var i = rootWindow
+	// Avoid infinite loop
+	for loop in windowsLimit {
+		let window = windowsList[i]
+
+		// TODO proper iteration
+		if window == null {
+			continue
+		}
+
+		if i != 0 and window.present and window.visible and not window.minimized, defaultSession.desktopPeek {
+			let color = new ByValue<Pixel32>()
+			color.ref.color = 0xAAAAAAAAu32
+			color.ref.rgba.ref.a = 64u8
+			drawRectangleWithAlpha(color.ref, window.x, window.y, window.width + 2, window.height + 34)
+			drawShadowBox(window.x - 1i16, window.y - 1i16, window.width + 3, window.height + 35)
+		}
+
+		// TODO better use max int or whatever instead of 0 for desktop window/others
+		if i != 0 and window.present and window.visible and not window.minimized, not defaultSession.desktopPeek {
+			let hover = frameHoverWindow == i ? frameHoverState : FrameHover.Noop
+
+			drawWindowFrame(
+				window.title,
+				window.x,
+				window.y,
+				// TODO frameHeight & frameWidth in overlappedWindow_create
+				window.width + 2,
+				window.height + 34,
+				firstResponder == i,
+				hover,
+				// Note this is kinda different than original
+				// but I like it more this way
+				frameHoverWindowDown and frameHoverWindowInsideButtonArea,
+				// ^ TODO Hexa: here had to add `,` trailing to ruin a diff
+				window.icon
+			)
+
+			// TODO just untyped `let frameHeight = 30 + 3`, see below
+			// TODO also `let frameHeight Int16 = 30 + 3`
+			let frameHeight Int16 = 30 + 3i16
+			let frameWidth Int16 = 1i16
+
+			if window.fbZeta != null and window.fbGama != null {
+				// TODO support transparent mode
+				drawBitmap32(window.fbCurrentZeta ? window.fbZeta : window.fbGama, window.x + frameWidth,
+					window.y + frameHeight)
+			} else {
+				drawVibrancedRectangle(
+					window.x + frameWidth, // TODO late-infer-fix int type
+					window.y + frameHeight,
+					window.width,
+					window.height,
+					darkTheme
+				)
+			}
+		}
+
+		// TODO does this imply that [0] is valid to get nextId?
+		i = windowsList[i].nextId
+		if i == 0 {
+			break
+		}
+	}
+}
+
+/// Forces repaint
+fun requestAnimationFrame() {
+	haveToRender = true
+}
+
+var framesDone = 0
+var framesLast = 0
+fun composite(startupMilliseconds UInt64) {
+	// TODO `let currentSession = defaultSession` cache
+	framesDone++
+	let frameStart = uptimeMilliseconds
+
+	// Update rectangles
+	defaultSession.desktopZone.updateGlobalPositionsWithSelfAsOrigin()
+	defaultSession.taskbarZone.updateGlobalPositionsWithSelfAsOrigin()
+	defaultSession.windowsZone.updateGlobalPositionsWithSelfAsOrigin()
+
+	let mouseX = mouseX
+	let mouseY = mouseY
+
+	// Startup animation
+	if startupAnimation < 2000 {
+		requestAnimationFrame()
+		startupAnimation += 9 * 2u16
+	}
+
+	// TODO non-centered drawBitmap32(wallpaper, 0, 0)
+	drawBitmap32(
+		wallpaper,
+		// TODO pre-compute and save those coordinates
+		(_framebuffer.width / 2i16) - (wallpaper.width / 2i16),
+		(_framebuffer.height / 2i16) - (wallpaper.height / 2i16)
+	)
+
+	// Caution
+	let privateBuild = false
+	if privateBuild {
+		var color = new ByValue<Pixel32>()
+		color.ref.rgba.ref.r = 0xFFu8
+		// TODO Hexa: deprecated syntax `value = value = value` or just compile into three lines
+		// TODO Hexa: 0 inferred as Int
+		// `color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0`
+		let offset = 384i16
+		for i in 32 {
+			// TODO Hexa: useless value in `()`
+			(_framebuffer.width / 2i16)
+			color.ref.rgba.ref.g = color.ref.rgba.ref.b = color.ref.rgba.ref.r
+
+			drawAsciiText(
+				"PRIVATE DEVELOPER BUILD / FOR TESTERS ONLY",
+				_framebuffer.width / 2i16 - 160i16 - offset + (i * 24i16),
+				_framebuffer.height / 2i16 - offset + (i * 24i16),
+				color.ref
+			)
+
+			drawAsciiText(
+				"PRIVATE DEVELOPER BUILD / FOR TESTERS ONLY",
+				_framebuffer.width / 2i16 - 160i16 + offset - (i * 24i16),
+				_framebuffer.height / 2i16 - offset + (i * 24i16),
+				color.ref
+			)
+
+			if i < 16 {
+				color.ref.rgba.ref.r -= 0x8u8
+			} else {
+				color.ref.rgba.ref.r += 0x8u8
+			}
+		}
+	}
+
+	// Desktop icons
+	var color = new ByValue<Pixel32>()
+	let shadowTextWidth = 76u16 - 8u16
+
+	// TODO not inferred properly?
+	// for file in desktopFilesList as! [String] {
+	for shortcut in desktopShortcuts {
+		// TODO Hexa: `let file = desktopFilesList[i]` [ ] must return T? not T
+		let xu = shortcut.rectangle.relativeX
+		let yu = shortcut.rectangle.relativeY
+
+		let outlineX = mouseX < dragX ? mouseX : dragX
+		let outlineXX = mouseX > dragX ? mouseX : dragX
+		let outlineY = mouseY < dragY ? mouseY : dragY
+		let outlineYY = mouseY > dragY ? mouseY : dragY
+		// let outlineW = mouseX < dragX ? dragX - mouseX : mouseX - dragX
+		// let outlineH = mouseY < dragY ? dragY - mouseY : mouseY - dragY
+		// TODO let selected = shortcut.rectangle.collidesWithBox(outlineX, outlineY, outlineW, outlineH)
+		let selected = ColliderRectangle.rectanglesIntersect(
+			outlineX, outlineY, outlineXX, outlineYY,
+			shortcut.rectangle.relativeX,
+			shortcut.rectangle.relativeY,
+			shortcut.rectangle.relativeX + shortcut.rectangle.width,
+			shortcut.rectangle.relativeY + shortcut.rectangle.height
+		) and drag
+
+		if shortcut.rectangle.mouseOver or selected {
+			color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0xFFu8
+			color.ref.rgba.ref.a = shortcut.rectangle.mouseHold or selected? 76u8 : 64u8
+			let outlineX = 0i16 + xu
+			let outlineY = -1i16 + yu
+			let outlineW = shortcut.rectangle.width + 0u16
+			let outlineH = shortcut.rectangle.height + 0u16
+			drawRectangleWithAlpha(color.ref, outlineX, outlineY, outlineW, outlineH)
+			drawRectangleOutline(color, outlineX, outlineY, outlineW, outlineH)
+		}
+
+		drawBitmap32WithAlpha(shortcut.icon, 14i16 + xu, yu)
+		if shortcut.link {
+			drawBitmap32WithAlpha(link, 14i16 + xu, yu + 48 - 16i16)
+		}
+
+		color.ref.color = 0x00000000
+		let textX = 2 + xu
+
+		// TODO light theme
+		color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0xFFu8
+		drawShadowText(shortcut.displayName, textX, 62i16 + yu, shadowTextWidth, color.ref) // TODO infer i16
+	}
+
+	// color.ref.rgba.ref.a = 64
+	// // TODO move to DWM handleMouseMove etc
+	// if mouseX > 20 and mouseX < (20 + 32) and mouseY > 12 and mouseY < (12 + 60) {
+	// let outlineX = 1i16
+	// let outlineY = 10i16
+	// let outlineW = 76u16
+	// let outlineH = 64u16
+	// drawRectangleWithAlpha(color.ref, outlineX, outlineY, outlineW, outlineH)
+	// drawRectangleOutline(color, outlineX, outlineY, outlineW, outlineH)
+	// }
+
+	// Desktop is below everything
+	compositeDesktop(mouseX, mouseY)
+
+	// Windows are below taskbar
+	compositeWindows()
+
+	// Taskbar
+	let taskbarHeight = Theme.hugeTaskbar? 40u16 : 30
+	let animationTaskbarY = Math.min(startupAnimation / 1555.0, 1.0) * taskbarHeight
+
+	drawVibrancedRectangle(
+		0,
+		_framebuffer.height - animationTaskbarY as! Int16, // TODO upcast `a - b` to larger type
+		_framebuffer.width as! UInt16,
+		taskbarHeight,
+		darkTheme
+	)
+
+	if justBlur {
+		color.ref.color = 0x126099FF
+		color.ref.rgba.ref.a = 128
+		lineHorizontalWithAlpha(color.ref, 0, _framebuffer.height - animationTaskbarY as! Int16, _framebuffer.width as! UInt16)
+		// TODO Hexa: lineHorizontal(color, 0, _framebuffer.height - animationTaskbarY as! Int16, _framebuffer.width as! UInt16)
+	}
+
+	let taskbarY = _framebuffer.height + taskbarHeight - animationTaskbarY * 2.0
+	let taskbarY = taskbarY as! Int16
+
+	// Start button
+	// TODO make pad an option
+	let leavesPadding = true
+	var leavesPad = 0u16
+	if leavesPadding {
+		leavesPad = 2u16
+	}
+	color.ref.rgba.ref.a = 128
+	color.ref.rgba.ref.a = 100
+	color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0xFFu8
+	color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0x61u8
+
+	//// TODO move to DWM handleMouseMove etc
+	// if mouseX < 40 and mouseY > (_framebuffer.height - 30) {
+	// // TODO ^ use bounding rectangles for mouse detection, not imperative code
+	// drawRectangleWithAlpha(color.ref, 0, taskbarY, 40 + leavesPad + leavesPad, 30)
+	// }
+	// Save the color
+	// TODO different color for light theme
+	let hoverColor = color
+	let holdColor = color
+	holdColor.ref.rgba.ref.a = 64
+
+	if let rectangle = defaultSession.taskbarStart, rectangle.mouseOver {
+		drawRectangleWithAlpha(
+			rectangle.mouseHold? holdColor.ref : hoverColor.ref,
+			0,
+			taskbarY,
+			40 + leavesPad + leavesPad,
+			taskbarHeight
+		)
+	}
+
+	// TODO more lr space around for beauty
+	// TODO create Theme class with static fields
+	// TODO ^ move other elements to the right
+	// TODO finally unify, use Int16 ot UInt16 everywhere lol!
+	drawBitmap32WithAlpha(leaves, leavesPad + 2i16, taskbarY + (Theme.hugeTaskbar? 7i16 : 2i16))
+	// TODO ^ white leaves or dynamically recolored depending on wallpaper or something
+	// ^ change color on hover
+
+	// TODO smooth transition between light and dark theme!
+	// ^ drawVibrancedRectangle should just take info from Theme directly,
+	// and dark-light transition from there too + it will request animation frame on it own
+	// TODO draw differentially (optimization) desktop/windows/taskbar (full overlap detection?)
+
+	// Taskbar shortcuts (pins)
+	// TODO move to taskbar.hexa
+	// Disable in huge mode cause looks not in style
+	// defaultSession.taskbarPin.enabled = not Theme.hugeTaskbar TODO
+	// defaultSession.taskbarPin.width = Theme.hugeTaskbar? 0i16 : 36i16
+	if not Theme.hugeTaskbar {
+		// TODO just use specs from collider
+		let shortcutsWidth = 36u16 // 24 is too small
+		// TODO respect leaves padding
+		let shortcutsIconX = 44i16 + (shortcutsWidth / 2i16) - (16 / 2i16)
+		let shortcutsEnd = shortcutsWidth + 44
+		if let rectangle = defaultSession.taskbarPin, rectangle.mouseOver {
+			drawRectangleWithAlpha(
+				rectangle.mouseHold? holdColor.ref : hoverColor.ref,
+				44i16,
+				taskbarY,
+				shortcutsWidth,
+				taskbarHeight
+			)
+			// rectangle.enabled = not Theme.hugeTaskbar
+			// rectangle.width = Theme.hugeTaskbar? 0i16 : shortcutsWidth as! Int16
+		}
+
+		drawBitmap32WithAlpha(notepad16, shortcutsIconX, taskbarY + 7i16)
+	}
+
+	// Version
+	{
+		// TODO draw on desktop, not foreground
+		let name = "Greentea OS Insider Preview"
+		let color = new ByValue<Pixel32>()
+		color.ref.color = 0xFFFFFFFFu32
+		drawTextBox(name, _framebuffer.width - getTextAdvance(name) - 5i16, taskbarY - 32i16, color.ref, 512, 32, true)
+		drawTextBox(versionText, _framebuffer.width - getTextAdvance(versionText) - 5i16, taskbarY - 16i16, color.ref, 512, 32, true)
+	}
+
+	// TODO tray space should be computed *before* window list
+	Taskbar.compositeOpenedWindowsList(taskbarY)
+
+	// Tray | line
+	if let rectangle = defaultSession.taskbarDesktopPeek, rectangle.mouseOver {
+		drawRectangleWithAlpha(
+			rectangle.mouseHold? holdColor.ref : hoverColor.ref,
+			rectangle.relativeX,
+			taskbarY,
+			// TODO some proper conversion like `Int16.clampToUInt16(value)` or as method
+			rectangle.width as! UInt16,
+			taskbarHeight
+		)
+	}
+
+	color.ref.color = 0x00000000
+	color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0x66u8
+	drawRectangle(color, _framebuffer.width - 4i16, taskbarY, 1, taskbarHeight)
+
+	var trayButtonX = _framebuffer.width - 20 - 16i16
+	trayButtonX = _framebuffer.width - 80i16
+	color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0x11u8
+	color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0xFFu8
+
+	// Time
+	if let rectangle = defaultSession.taskbarTime, rectangle.mouseOver {
+		drawRectangleWithAlpha(
+			rectangle.mouseHold? holdColor.ref : hoverColor.ref,
+			rectangle.relativeX,
+			taskbarY,
+			rectangle.width as! UInt16,
+			taskbarHeight
+		)
+	}
+	let timeMilliseconds = uptimeMilliseconds + startupMilliseconds
+	var uptimeHours = (timeMilliseconds / (60 * 60 * 1000)) as! Int64
+	while uptimeHours >= 24 {
+		uptimeHours -= 24
+	}
+
+	// TODO must subtract days here too, like `-= 24` for hours
+	let uptimeMinutes = ((timeMilliseconds - (uptimeHours * (60 * 60 * 1000))) / (60 * 1000)) as! UInt8
+
+	// TODO theme should decide AM/PM or 24H format
+	var pm Bool = uptimeHours >= 12
+	if uptimeHours > 12 {
+		uptimeHours -= 12
+	}
+
+	let trayTimeStartX = trayButtonX + 20
+	let trayTimeY = taskbarY + (Theme.hugeTaskbar? 15i16 : 10i16)
+	var trayTimeX = trayTimeStartX + 4
+	trayTimeX += drawIntegerText(uptimeHours, trayTimeX, trayTimeY, color.ref)
+	trayTimeX += drawAsciiText(":", trayTimeX, trayTimeY, color.ref)
+	if uptimeMinutes < 10 {
+		trayTimeX += drawAsciiText("0", trayTimeX, trayTimeY, color.ref)
+	}
+	trayTimeX += drawIntegerText(uptimeMinutes, trayTimeX, trayTimeY, color.ref)
+	trayTimeX += drawAsciiText(pm ? " PM" : " AM", trayTimeX, trayTimeY, color.ref)
+
+	// Input language
+	if let rectangle = defaultSession.taskbarInput, rectangle.mouseOver {
+		drawRectangleWithAlpha(
+			rectangle.mouseHold? holdColor.ref : hoverColor.ref,
+			rectangle.relativeX,
+			taskbarY,
+			rectangle.width as! UInt16,
+			taskbarHeight
+		)
+	}
+	let languageId = 'ENG'
+	let languagePad = 8
+	var trayLanguageX = trayTimeStartX - getTextAdvance(languageId) - languagePad * 2
+	drawAsciiText(languageId, trayLanguageX, trayTimeY, color.ref)
+
+	// Tray ^ button
+	// TODO Hexa: try `if let item = defaultSession.taskbarTrayOpener, item.mouseOver { item.xxx }` pattern
+	if defaultSession.taskbarTrayOpener.mouseOver {
+		drawRectangleWithAlpha(
+			defaultSession.taskbarTrayOpener.mouseHold? holdColor.ref : hoverColor.ref,
+			defaultSession.taskbarTrayOpener.relativeX,
+			taskbarY,
+			defaultSession.taskbarTrayOpener.width as! UInt16,
+			taskbarHeight
+		)
+	}
+
+	trayButtonX = trayLanguageX - languagePad - 16i16
+
+	line45smooth(color, trayButtonX, trayTimeY + 2i16, 6i16, 1i16)
+	line45smooth(color, trayButtonX + 1i16, trayTimeY + 2i16, 6i16, -1i16)
+
+	// Search
+	if defaultSession.taskbarSearch.mouseOver {
+		drawRectangleWithAlpha(
+			defaultSession.taskbarSearch.mouseHold? holdColor.ref : hoverColor.ref,
+			defaultSession.taskbarSearch.relativeX,
+			taskbarY,
+			defaultSession.taskbarSearch.width as! UInt16,
+			taskbarHeight
+		)
+	}
+
+	drawBitmap32WithAlpha(
+		traySearchIcon,
+		// TODO probably compute global positions for all once in the begin of composition?
+		defaultSession.taskbarSearch.relativeX + 5i16,
+		taskbarY + (Theme.hugeTaskbar? 9i16 : 4i16)
+	)
+
+	// Tray popup
+	if defaultSession.showTray {
+		let w = 320u16
+		let h = 400u16
+		let x = _framebuffer.width - w - 12i16
+		let y = taskbarY - h - 12i16
+
+		drawShadowBox(x, y as! Int16, w, h)
+		drawVibrancedRectangleRounded(x, y as! Int16, w, h, 16, darkTheme)
+
+		color.ref.color = 0x44444444u32
+		drawRectangleOutline(color, x, y as! Int16, w, h)
+
+		// Header
+		color.ref.color = 0xFFFFFFFFu32
+		drawTextBox("Control Center", x + 16, y + 16i16, color.ref, w - 32u16, 24, true)
+
+		// Quick Settings Grid
+		for xx in 2 {
+			for yy in 2 {
+				let bW = (w - 48u16) / 2u16
+				let bH = 60u16
+				let atX = x + 16 + (xx as! Int16 * (bW as! Int16 + 16i16))
+				let atY = y + 50 + (yy as! Int16 * (bH as! Int16 + 16i16))
+
+				drawVibrancedRectangleRounded(atX, atY, bW, bH, 12, darkTheme)
+
+				if xx == 0 and yy == 0 {
+					drawBitmap32WithAlpha(trayWifi, atX + 12i16, atY + 12i16)
+					drawTextBox("WiFi", atX + 44i16, atY + 22i16, color.ref, bW - 44u16, 20, true)
+				}
+				if xx == 1 and yy == 0 {
+					drawBitmap32WithAlpha(trayVolume, atX + 12i16, atY + 12i16)
+					drawTextBox("Volume", atX + 44i16, atY + 22i16, color.ref, bW - 44u16, 20, true)
+				}
+			}
+		}
+
+		// Sliders placeholders
+		color.ref.rgba.ref.a = 100
+		drawVibrancedRectangleRounded(x + 16, y + 210, w - 32, 40, 20, darkTheme)
+		drawVibrancedRectangleRounded(x + 16, y + 260, w - 32, 40, 20, darkTheme)
+	}
+	// Start
+	// TODO move to session
+	defaultSession.startZone.enabled = defaultSession.showStart
+	defaultSession.popupZone.enabled = defaultSession.startZone.enabled // or
+
+	// TODO move to start.hexa
+	if defaultSession.showStart {
+		let w = 640u16
+		let h = 760u16 // Increased height for widgets
+		let x Int16 = Theme.centeredStart?
+		(defaultSession.popupZone.width / 2i16) - (w / 2i16) : 0i16
+		let y = taskbarY - h - (Theme.centeredStart? 12i16 : 0i16)
+
+		if Theme.startShadow {
+			drawShadowBox(x, y, w, h)
+		}
+
+		drawVibrancedRectangleRounded(x, y as! Int16, w, h, 16, darkTheme)
+		color.ref.color = 0x44444444u32
+		drawRectangleOutline(color, x, y as! Int16, w, h)
+
+		defaultSession.startZone.relativeX = x
+		defaultSession.startZone.relativeY = y
+		defaultSession.startZone.width = w + 0i16
+		defaultSession.startZone.height = h + 0i16
+
+		fun highlight(rectangle ColliderRectangle) Void {
+			let color = new ByValue<Pixel32>()
+			color.ref.rgba.ref.a = 100
+			color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0x61u8
+			let hoverColor = color
+			let holdColor = color
+			holdColor.ref.rgba.ref.a = 64
+
+			if rectangle.mouseOver {
+				drawRectangleWithAlpha(
+					rectangle.mouseHold? holdColor.ref : hoverColor.ref,
+					defaultSession.startZone.relativeX + rectangle.relativeX,
+					defaultSession.startZone.relativeY + rectangle.relativeY,
+					rectangle.width + 0u16,
+					rectangle.height + 0u16
+				)
+			}
+		}
+
+		// Interior
+		{
+			let widgetPanelHeight = 140i16
+			let userPanelHeight = 64i16
+
+			// Widget Panel (Top)
+			{
+				StartMenu.drawWidgets(x, y, w as! Int16, widgetPanelHeight)
+
+				color.ref.color = 0x126099FF
+				color.ref.rgba.ref.a = 80
+				lineHorizontalWithAlpha(color.ref, x + 20i16, y + widgetPanelHeight, w - 40u16)
+			}
+
+			// Pins panel
+			{
+				let pinsY = widgetPanelHeight
+				defaultSession.startPins.relativeY = pinsY
+				defaultSession.startPins.width = defaultSession.startZone.width
+				defaultSession.startPins.height = 420i16
+
+				StartMenu.drawPinnedItems(x, pinsY + y + 24i16, w as! Int16, defaultSession.startPins.height)
+
+				color.ref.color = 0x0A385999
+				let title = "Pinned"
+				drawTextBox(title, x + 24, pinsY + y + 10i16, color.ref, w, 32, true)
+			}
+
+			// Search panel (Middle-ish)
+			{
+				let searchY = widgetPanelHeight + defaultSession.startPins.height + 10i16
+				let inputY = y + searchY
+
+				color.ref.rgba.ref.r = 20
+				color.ref.rgba.ref.g = 20
+				color.ref.rgba.ref.b = 20
+				color.ref.rgba.ref.a = 100
+				drawVibrancedRectangleRounded(x + 20i16, inputY, w - 40, 40, 10, darkTheme)
+
+				defaultSession.startSearch.relativeX = 20i16
+				defaultSession.startSearch.relativeY = searchY
+				defaultSession.startSearch.width = w - 40i16
+				defaultSession.startSearch.height = 40i16
+				highlight(defaultSession.startSearch)
+
+				color.ref.color = 0xFFFFFFFFu32
+				let welcome = "Search apps, settings, and documents"
+				drawTextBox(welcome, x + 60, inputY + 10i16, color.ref, w - 100u16, 32, true)
+
+				drawBitmap32WithAlpha(startSearchIcon, x + 30i16, inputY + 4i16)
+			}
+
+			// User panel (Bottom)
+			{
+				let userY = h - userPanelHeight
+				color.ref.color = 0x126099FF
+				color.ref.rgba.ref.a = 80
+				lineHorizontalWithAlpha(color.ref, x + 20i16, y + userY, w - 40u16)
+
+				let iconOffset = 8i16
+				defaultSession.startPower.width = 48i16 + iconOffset
+				defaultSession.startSettings.width = 48i16
+				defaultSession.startHome.width = 48i16
+				defaultSession.startGallery.width = 48i16
+				defaultSession.startDownloads.width = 48i16
+
+				defaultSession.startUser.relativeX = 20i16
+				defaultSession.startUser.relativeY = userY
+				defaultSession.startUser.height = userPanelHeight
+
+				var i = 1i16
+				defaultSession.startPower.relativeX = w - 48 * i - 20i16
+				defaultSession.startPower.relativeY = userY
+				i++
+				defaultSession.startSettings.relativeX = w - 48 * i - 20i16
+				defaultSession.startSettings.relativeY = userY
+				i++
+				defaultSession.startHome.relativeX = w - 48 * i - 20i16
+				defaultSession.startHome.relativeY = userY
+
+				highlight(defaultSession.startUser)
+				drawBitmap32WithAlpha(startUserIcon, x + 32i16, y + userY + userPanelHeight / 2 - 16i16)
+
+				highlight(defaultSession.startPower)
+				drawBitmap32WithAlpha(startPowerIcon, x + defaultSession.startPower.relativeX + 8i16, y + userY + userPanelHeight / 2 - 16i16)
+				highlight(defaultSession.startSettings)
+				drawBitmap32WithAlpha(startGearIcon, x + defaultSession.startSettings.relativeX + 8i16, y + userY + userPanelHeight / 2 - 16i16)
+
+				color.ref.color = 0xFFFFFFFFu32
+				let welcome = "User"
+				drawTextBox(welcome, x + 75, y + userY + 22i16, color.ref, w, 32, true)
+			}
+		}
+	}
+	// Performance tracking
+	let frameTime = uptimeMilliseconds - frameStart
+	// TODO drawIntegerText(frameTime as! Int64, 102i16, 40i16, color.ref)
+
+	// HUD
+	quake()
+	invalidateCursorBackplate(mouseX as! UInt16, mouseY as! UInt16)
+	drawCursor(cur, mouseX as! UInt16, mouseY as! UInt16)
+}
+
+var cursorBackplate Bitmap32 = null
+var cursorBackplateX UInt16 = 0
+var cursorBackplateY UInt16 = 0
+// TODO class Box + fun max
+var cursorDirtyX Int16 = 0
+var cursorDirtyY Int16 = 0
+var cursorDirtyBottomX UInt16 = 0
+var cursorDirtyBottomY UInt16 = 0
+
+fun initCursorBackplate() {
+	cursorBackplate = allocateBitmap(cur.width, cur.height)
+}
+
+/// Copy current framebuffer into cache
+fun invalidateCursorBackplate(x UInt16, y UInt16) {
+	cursorBackplateX = x
+	cursorBackplateY = y
+
+	for yi in cur.height {
+		let scanlineScreen UInt64 = Screen.width * (y + yi - cur.y + 1) - cur.x + 1 + x
+		let scanline UInt64 = cursorBackplate.width * yi
+		for xi in cur.width {
+			cursorBackplate.pixels[scanline + xi] = Screen.pixels[scanlineScreen + xi]
+		}
+	}
+}
+
+/// Draw backplate onto framebuffer to emulate erase
+fun drawCursorBackplate() {
+	let x = cursorBackplateX
+	let y = cursorBackplateY
+
+	// Hexa: `as` here breaks code gen
+	cursorDirtyX = (x as! Int16) - cur.x + 1i16
+	cursorDirtyY = (y as! Int16) - cur.y + 1i16
+	cursorDirtyBottomX = cursorDirtyX + cur.width
+	cursorDirtyBottomY = cursorDirtyY + cur.height
+
+	for yi in cur.height {
+		let scanlineScreen UInt64 = Screen.width * (y + yi - cur.y + 1) - cur.x + 1 + x
+		let scanline UInt64 = cursorBackplate.width * yi
+		for xi in cur.width {
+			Screen.pixels[scanlineScreen + xi] = cursorBackplate.pixels[scanline + xi]
+		}
+	}
+}
+
+/// Draw cursor itself
+fun drawCursor(cur Cursor, x UInt16, y UInt16) {
+	cursorDirtyX = (x as! Int16) - cur.x + 1i16
+	cursorDirtyY = (y as! Int16) - cur.y + 1i16
+	cursorDirtyBottomX = cursorDirtyX + cur.width
+	cursorDirtyBottomY = cursorDirtyY + cur.height
+
+	// TODO mirror cursor in this code if global setting for cursors mirroring is set
+	// to affect all apps
+	let pixel = new ByValue<Pixel32>()
+	let bmp = (cur.bmp as! UInt64 + cur.bmpStart) as! ArrayPointer<UInt32>
+
+	for yi in cur.height {
+		for xi in cur.width {
+			let yy UInt32 = cur.height - yi - 1u32
+			pixel.ref.color = bmp[xi + yy * (cur.width as! UInt32)] as! UInt32
+			blendPixel(x + xi - cur.x + 1, y + yi - cur.y + 1, pixel.ref)
+		}
+	}
+}
+
+/// Copy the part of back buffer to the native framebuffer
+// TODO mem copy with aligned movntdq
+fun copyDirtyToScreen(x Int16, y Int16, bottomX Int16, bottomY Int16) {
+	var source = Screen.pixels as! ArrayPointer<UInt32>
+	var destination = _framebuffer.base as! ArrayPointer<UInt32>
+	let width = _framebuffer.width
+	let height = _framebuffer.height
+
+	// TODO Hexa: infer `0` to `0i16` at `let y = y < 0? 0<-here : y`
+	let y = y < 0? 0i16 : y
+	let x = x < 0? 0i16 : x
+	let bottomX = bottomX > width? width as! Int16 : bottomX
+	let bottomY = bottomY > height? height as! Int16 : bottomY
+
+	for yi in y ... bottomY {
+		let scanline UInt64 = width * (yi as! UInt64)
+		for xi in x ... bottomX {
+			let offset UInt64 = scanline + (xi as! UInt64)
+			destination[offset] = source[offset]
+		}
+	}
+
+	/*
+	// Pixels to bytes
+	let width = _framebuffer.width// * 4u64
+	//let pixelsPerScanLine UInt64 = _framebuffer.pixelsPerScanLine * 4
+	//let w = 64 //w * 4u64 / 8u64
+	//let x = x * 4u64
+
+	// Lower bound
+	let fixX = x < 0 ? 0 : x
+	let fixY = y < 0 ? 0 : y
+	let w = w - (fixX - x)
+	let h = h - (fixY - y)
+
+	// Upper bound
+	//let w = ((w + fixX) >= _framebuffer.width)? ((w + fixX) - _framebuffer.width) : w
+
+	//ssdas Align by 8
+	for yi in h {
+		/////
+		// TODO Hexa: precision upgrade
+		let scanline UInt64 = width * (yi as! UInt64 + fixY as! UInt64)
+		//let scanline UInt64 = width * (yi + y) + x
+		//source = source + scanline
+		//destination = destination + scanline
+		// 8 bytes at a time
+		//movntdq(source as! ArrayPointer<UInt64>, destination as! ArrayPointer<UInt64>, w)
+		for xi in w {
+			//let offset UInt64 = scanline + xi + x
+			//
+			let offset UInt64 = scanline + (xi as! UInt64) + (fixX as! UInt64)
+			//
+			destination[offset] = source[offset]
+			//
+			 | 0x0F0F0F
+		}
+	}
+	*/
+}
+
+/// Copy the back buffer to the native framebuffer
+fun copyToScreen() {
+	if Theme.fast {
+		copyToScreenFaster()
+		return
+	}
+
+	// On 64-bit platform registers are 64-bit,
+	// so lets copy two or more pixels at a time
+	let height = _framebuffer.height
+	// Let's assume it is always dividable by 2
+	// TODO ^ add some stride to the Screen.fb itself to ensure this
+	// or make loop to copy rightmost pixels separately
+	let width = _framebuffer.width / 2
+	let scanline UInt64 = _framebuffer.width * 4
+	// TODO byte offset should respect bytes-per-pixel (may be 3?)
+	let pixelsPerScanLine UInt64 = _framebuffer.pixelsPerScanLine * 4
+	var source = (Screen.pixels as! UInt64) as! ArrayPointer<UInt64>
+	var destination = (_framebuffer.base as! UInt64) as! ArrayPointer<UInt64>
+
+	// TODO copy only dirty rect (at least cursor) (must be aligned to the stride too)
+	for y in height {
+		for x in width {
+			destination[x] = source[x]
+		}
+
+		source = ((source as! UInt64) + scanline) as! ArrayPointer<UInt64>
+		destination = ((destination as! UInt64) + pixelsPerScanLine) as! ArrayPointer<UInt64>
+	}
+}
+
+/// Copy the back buffer to the native framebuffer without buffering
+// TODO try and compare to a *fast* `memcpy/memmove` + same for bootloader
+fun copyToScreenFaster() {
+	let height = _framebuffer.height
+	// Let's assume it is always dividable by 2
+	// TODO ^ add some stride to the Screen.fb itself to ensure this
+	// or make loop to copy rightmost pixels separately
+	let width = _framebuffer.width / 16
+	let scanline UInt64 = _framebuffer.width * 4
+	// TODO byte offset should respect bytes-per-pixel (may be 3?)
+	let pixelsPerScanLine UInt64 = _framebuffer.pixelsPerScanLine * 4
+	var source = (Screen.pixels as! UInt64) as! ArrayPointer<UInt64>
+	var destination = (_framebuffer.base as! UInt64) as! ArrayPointer<UInt64>
+
+	// TODO copy only dirty rect (at least cursor) (must be aligned to the stride too)
+	for y in height {
+		// Copy 64 bytes at a time, thus `sizeof(pixel) / 16`
+		movntdq(source, destination, width)
+
+		source = ((source as! UInt64) + scanline) as! ArrayPointer<UInt64>
+		destination = ((destination as! UInt64) + pixelsPerScanLine) as! ArrayPointer<UInt64>
+	}
+}

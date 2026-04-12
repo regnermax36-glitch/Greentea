@@ -1,0 +1,209 @@
+// The Tofita Engine
+// Copyright (C) 2022-2025 Oleh Petrenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// Window frames and some GUI elements
+
+// TODO collider should set `.hint`, child overrides parent one, but parent sets default one to (deep) childs
+fun drawHint(text String, x Int16, y Int16) {
+	let measure = getTextAdvance(text)
+	let w = 6 * 2 + measure + 1
+	let h = 20u16
+
+	let color = new ByValue<Pixel32>()
+	color.ref.color = 0x57575757
+	drawRectangleOutline(color, x, y, w, h)
+	color.ref.color = 0xFFFFFFFFu32
+	drawRectangle(color, x + 1i16, y + 1i16, w - 2, h - 2)
+	color.ref.color = 0x57575757
+	drawAsciiText(text, x + 6, y + 5i16, color.ref)
+}
+
+fun shadow(x Int16, y Int16, darkness UInt8) {
+	var pixel = new ByValue<Pixel32>()
+	pixel.ref.color = 0
+	pixel.ref.rgba.ref.a = 0xFF - darkness
+	blendPixel(x, y, pixel.ref)
+}
+
+fun distance(x1 Int16, y1 Int16, x2 Int16, y2 Int16) Int32 {
+	// TODO floor?
+	return Math.round(Math.sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)))
+}
+
+fun drawShadowBox(x Int16, y Int16, w UInt16, h UInt16, radius Int16 = 0) {
+	let w = w as! Int16
+	let h = h as! Int16
+
+	for iy in 16i16 {
+		for ix in w {
+			shadow(x + ix, y - iy, 192u8 + iy * 4u8)
+			shadow(x + ix, y + iy + h, 192u8 + iy * 4u8)
+		}
+	}
+	for iy in h {
+		for ix in 16i16 {
+			shadow(x - ix, y + iy, 192u8 + ix * 4u8)
+			shadow(x + ix + w, y + iy, 192u8 + ix * 4u8)
+		}
+	}
+	for iy in 1 ... 15 {
+		for ix in 1 ... 15 {
+			let ix = ix as! Int16 // TODO `...i16`
+			let iy = iy as! Int16
+
+			let dist = 192 + distance(x, y, x - ix, y - iy) * 4
+			if dist > 255 {
+				continue
+			}
+			let dist = dist as! UInt8 // TODO
+
+			shadow(x - ix, y - iy, dist)
+			shadow(x + ix + w - 1i16, y - iy, dist) // TODO i16
+			shadow(x + ix + w - 1i16, y - 1 + iy + h, dist)
+			shadow(x - ix, y - 1 + iy + h, dist)
+		}
+	}
+}
+
+fun drawWindowFrame(title String, x Int16, y Int16, w UInt16, h UInt16, active Bool,
+	hover FrameHover, down Bool, icon Bitmap32) {
+	var shorterFrame Bool = false // OSX style TODO
+
+	var color = new ByValue<Pixel32>()
+
+	drawVibrancedRectangle(x + 1i16, y + 1i16, w - 1, 32, darkTheme)
+
+	// TODO " (Not responding)"
+	// TODO crop text to fit size, i.e. drawText to take optional argument
+	if active {
+		if darkTheme {
+			color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0xAAu8
+		} else {
+			color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0x11u8
+		}
+	} else {
+		if darkTheme {
+			color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0x88u8
+		} else {
+			color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 0x88u8
+		}
+	}
+
+	// Icon
+	// TODO proper app icon from wapi
+	drawBitmap32WithAlpha(icon, x + 9i16, y + 8i16)
+
+	// Title
+	if justBlur {
+		// TODO correct `w - buttons`
+		color.ref.color = 0x126099FF
+		drawShadowText(title, x + 31, y + 9i16 + 3i16, w - 44 * 3, color.ref)
+	} else {
+		// TODO ellipsis
+		drawText(title, x + 31, y + 9i16 + 3i16, color.ref)
+	}
+
+	// Frame hairline
+	if active {
+		color.ref.color = 0x126099FF
+	} else {
+		color.ref.rgba.ref.r = color.ref.rgba.ref.g = color.ref.rgba.ref.b = 164u8
+	}
+	drawRectangleOutline(color, x, y, w, h)
+
+	// Minimize
+	// color.rgba.r = color.rgba.g = color.rgba.b = 229
+	// color.rgba.a = 128
+	// rectangle(x + w - (45 + 1) * 3, y + 1, 45, 29, 229, 229, 229)
+	// drawRectangleWithAlpha(color, x + w - (45 + 1) * 3, y + 1, 45, 29)
+
+	// color.rgba.r = color.rgba.g = color.rgba.b = 0
+	// rectangle(x + w - (45 + 1) * 3 + 23 - 4, y + 20, 8, 1, 0, 0, 0)
+	color.ref.color = 0xFFFFB911u32
+
+	if hover == FrameHover.Min {
+		color.ref.rgba.ref.a = down ? 128u8 : 230u8 // TODO u8
+		drawRectangleWithAlpha(color.ref, x + w - (45 + 1) * 3 + 1i16, y + 1i16, 44, 29)
+		color.ref.color = 0xFF000000u32
+	}
+
+	// TODO better idea
+	// ^ The problem here is that tiny windows cannot fit those buttons and that looks weird
+	let hideMinimizeAndMaximize = w < 200
+
+	// TODO option to draw it at center by default
+	let centeredMinimize = true
+	let minimizeY = if centeredMinimize {
+		// drawRectangle(color, x + w - (45 + 1) * 3 + 23 - 4i16, y + 15i16, 8, 1)
+		15i16
+	} else {
+		// drawRectangle(color, x + w - (45 + 1) * 3 + 23 - 4i16, y + 19i16, 8, 1)
+		19i16
+	}
+
+	// We (yes me and you) currently hide the inactive button visuals, they still can be hovered - yes its needs to be rethink-ed
+	if hover == FrameHover.Min or not hideMinimizeAndMaximize {
+		drawRectangle(color, x + w - (45 + 1) * 3 + 23 - 4i16, y + minimizeY, 8, 1)
+	}
+
+	// Maximize
+	// color.rgba.r = color.rgba.g = color.rgba.b = 229
+	// color.rgba.a = 128
+	// drawRectangleWithAlpha(color, x + w - (45 + 1) * 2, y + 1, 45, 29)
+
+	// color.rgba.r = color.rgba.g = color.rgba.b = 0
+	color.ref.color = 0xFF59B842u32
+
+	if hover == FrameHover.Max {
+		color.ref.rgba.ref.a = down ? 128u8 : 240u8
+		drawRectangleWithAlpha(color.ref, x + w - (45 + 1) * 2 + 1i16, y + 1i16, 44, 29)
+		color.ref.color = 0xFF000000u32
+	}
+
+	if hover == FrameHover.Max or not hideMinimizeAndMaximize {
+		// TODO yeah use lines drawing instead of 1px wide rectangles
+		drawRectangle(color, x + w - (45 + 1) * 2 + 23 - 4i16, y + 14 - 4i16, 9, 1)
+		drawRectangle(color, x + w - (45 + 1) * 2 + 23 - 4i16, y + 14 + 5i16, 10, 1)
+		drawRectangle(color, x + w - (45 + 1) * 2 + 23 - 4i16, y + 14 - 4i16, 1, 9)
+		drawRectangle(color, x + w - (45 + 1) * 2 + 23 + 5i16, y + 14 - 4i16, 1, 9)
+	}
+
+	// Close
+	// color.rgba.b = 232
+	// color.rgba.g = 17
+	// color.rgba.r = 35
+	// color.rgba.a = 128
+	// drawRectangleWithAlpha(color, x + w - (45 + 1) * 1, y + 1, 45, 29)
+
+	// color.rgba.r = color.rgba.g = color.rgba.b = 255
+	color.ref.color = 0xFFFF5557u32
+
+	if hover == FrameHover.Close {
+		color.ref.rgba.ref.a = down ? 128u8 : 240u8
+		drawRectangleWithAlpha(color.ref, x + w - (45 + 1) * 1 + 1i16, y + 1i16, 44, 29)
+		color.ref.color = 0xFF000000u32
+	}
+
+	line45smooth(color, x + w - (45 + 1) * 1 + 23 - 6i16, y + 10i16, 10i16, 1i16)
+	line45smooth(color, x + w - 18i16, y + 10i16, 10i16, -1i16)
+
+	// Shadow
+	drawShadowBox(x - 1i16, y - 1i16, w + 1, h + 1)
+
+	// :3
+	if Theme.showGura {
+		drawBitmap32WithAlpha(gura, w > 228 ? x : x - 36i16, y - 139i16)
+	}
+}
