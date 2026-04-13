@@ -24,8 +24,25 @@ class Widget {
 
 let startWidgets [Widget] = []
 
+fun updateTimeWidget(widget Widget) {
+	// Simple placeholder using uptime as CMOS read is complex for this turn
+	let seconds = uptimeMilliseconds / 1000
+	let mins = (seconds / 60) % 60
+	let hours = (seconds / 3600) % 24
+	widget.content = hours + ":" + (mins < 10 ? "0" : "") + mins
+}
+
 class StartMenu {
 	static fun drawWidgets(x Int16, y Int16, w Int16, h Int16) Void {
+		// Update dynamic widgets
+		for i in startWidgets.length {
+			let widget = startWidgets[i]
+			if widget.title == "System" {
+				widget.content = "CPUs: " + ACPIParser.coresAp + " RAM: " + (PhysicalAllocator.available * 4096 / 1024 / 1024) + "MB"
+			} else if widget.title == "Clock" {
+				updateTimeWidget(widget)
+			}
+		}
 		let pad = 12i16
 		var xu = x + pad
 		var yu = y + pad

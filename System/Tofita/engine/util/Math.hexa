@@ -1,0 +1,61 @@
+// The Tofita Engine
+// Copyright (C) 2022-2024 Oleh Petrenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+class Math {
+	static fun round(value Float) Int32 {
+		return ((value) >= 0 ? ((value) + 0.5) as! Int32 : ((value) - 0.5) as! Int32)
+	}
+
+	fun sqrt(number Float32) Float32 {
+		var i Int32
+		var x2 Float32
+		var y Float32
+		let threehalfs Float32 = 1.5f32
+
+		x2 = number * 0.5f32
+		y = number
+
+		var y ArrayByValue<Float32, 1> = [y]
+
+		// Floating point bit level hacking [sic]
+		i = (y as! ArrayPointer<Int32>)[0]
+		i = 0x5f3759df - (i >> 1) // Newton's approximation
+
+		var i ArrayByValue<Int32, 1> = [i]
+
+		var y = (i as! ArrayPointer<Float32>)[0]
+		y = y * (threehalfs - (x2 * y * y)) // 1st iteration
+		y = y * (threehalfs - (x2 * y * y)) // 2nd iteration
+		y = y * (threehalfs - (x2 * y * y)) // 3rd iteration
+
+		return 1.0f32 / y
+	}
+
+	static fun min(a Int32, b Int32) Int32 {
+		return a < b ? a : b
+	}
+
+	static fun min(a Float32, b Float32) Float32 {
+		return a < b ? a : b
+	}
+
+	static fun max(a Int32, b Int32) Int32 {
+		return a > b ? a : b
+	}
+
+	static fun max(a Float32, b Float32) Float32 {
+		return a > b ? a : b
+	}
+}

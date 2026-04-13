@@ -1,0 +1,375 @@
+// The Tofita Engine
+// Copyright (C) 2022-2025 Oleh Petrenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// CRT
+fun memzero(dest ArrayPointer<UInt8>, len UInt64) {
+	memset(dest, 0, len)
+}
+
+// Clang workaround
+@keep
+@rename('___chkstk_ms')
+fun chkstkStub() Void {
+	// This function must be empty to avoid LLVM bugs TODO
+	// serialPrintln("<Tofita> chkstkStub called")
+}
+
+// Hexa definitions
+@extern @rename('versionMajor') declare let versionMajor Int
+@extern @rename('versionMinor') declare let versionMinor Int
+@extern @rename('versionTag') declare let versionTag Int
+
+/// Initialization pseudo-thread that spawns actual engine threads
+fun engineInit(params UefiPayload) {
+	serialPrintln("<Tofita> Greentea OS " + versionMajor + "." + versionMinor + "." + versionTag + " engine loaded and operational")
+	serialPrintf("<Tofita> CR3 points to: %8\n", params.pml4 as! UInt64)
+
+	// Initialize loading text -> before everything else
+	{
+		initLoadingText()
+		// Same logic as in `boot.hexa`
+		let versionY = (params.framebuffer.ref.height / 4) * 3 + 64 as! Int16
+		loadingErrorY = versionY + 32i16
+		// Prompt that we are alive at higher-half
+		drawLoadingVerbose("Engine ready...", params.framebuffer.ref)
+	}
+
+	// TODO `anyPtrOrObj as! UInt32` -> error precision lost on 64-bit
+	paramsCache = params
+	PhysicalAllocator.init(params)
+
+	// TODO
+	// let available = PhysicalAllocator.getAvailablePages() * 4096
+	// uint32_t megs = Math::round((double)params->ramBytes / (1024.0 * 1024.0));
+	// uint32_t availableMegs = Math::round((double)available / (1024.0 * 1024.0));
+	// quakePrintf(L"[CPU] %s %s %d MB RAM (%d MB usable)\n", cpuid.vendorID, cpuid.brandName, megs,
+	// availableMegs);
+
+	// Ensure to allocate within 1 MB
+	PhysicalAllocator.resetCounter()
+	let trapezePadding = PhysicalAllocator.allocateOnePage()
+	// TODO ^ rename to "first reserved 4k"? Does it even works like that? Clarify in comments
+	// TODO `8` as a variable
+	let trapeze = PhysicalAllocator.allocatePages(8) // Bootloader
+	let trapezePhysical = trapeze - wholePhysicalStart
+
+	pml4entries = (wholePhysicalStart + (params.pml4 as! UInt64)) as! ArrayPointer<ByValue<PageEntry>>
+
+	// CPU features
+	let cpuid CPUID = getCPUID()
+
+	{
+		drawLoadingVerbose("Initializing CPU features...", params.framebuffer.ref)
+		// Page Attribute Table (PAT)
+		// TODO SMP enable PAT for each AP
+		// TODO would make sense to put it into `AMD64.initializePAT(cpuid)` namespace ig
+		initializePAT(cpuid)
+
+		// TODO SMEP
+	}
+
+	// TODO move to engine\health\sanityChecks.hexa
+	if false /*not SanityChecks.isVirtualMemoryOkay() { error }*/ {
+		mapMemory(pml4entries, 4096, 4096, 256, accessibleByUser: false)
+		mapMemory(pml4entries, 4096, 4096, 256, accessibleByUser: false)
+		mapMemory(pml4entries, 4096 * 20u64, 4096 * 10u64, 256, accessibleByUser: false)
+
+		serialPrintf("<> %8 == %8\n", (4096u64 * 10),
+			resolveAddr(pml4entries, 4096u64 * 20))
+		serialPrintf("<> %8 == %8\n", (4096 * 10 + 123),
+			resolveAddr(pml4entries, 4096u64 * 20 + 123))
+		serialPrintf("<> %8 == %8\n", (0),
+			resolveAddr(pml4entries, wholePhysicalStart))
+		serialPrintf("<> %8 == %8\n", (0 + 123),
+			resolveAddr(pml4entries, wholePhysicalStart + 123))
+		serialPrintf("<> %8 == %8\n", (0 + 4096),
+					 resolveAddr(pml4entries, (wholePhysicalStart as! UInt64) + 4096))
+		serialPrintf( // TODO hint that (wholePhysicalStart as! UInt64) useless cause it is same T already
+			"<> %8 == %8\n", (0 + 4096 * 1000 + 123),
+			resolveAddr(pml4entries, wholePhysicalStart + 4096 * 1000 + 123))
+		serialPrintf("<> %8 == %8\n", (1048576),
+			resolveAddr(pml4entries, 0xffff800000000000u64))
+		serialPrintf("<> %8 == %8\n", (1048576 + 123),
+			resolveAddr(pml4entries, 0xffff800000000000u64 + 123))
+
+		// TODO move all these to SanityCheck module
+		// serialPrint("resolves from, to, wh, wh+8888: ")
+		// serialPrint("\n")
+		// serialPrintHex(4096 * 10)
+		// serialPrint("\n")
+		// serialPrintHex(pages.resolveAddr(4096 * 20 + 123))
+		// serialPrint("==\n")
+		// serialPrintHex(pages.resolveAddr(4096 * 20))
+		// serialPrint("\n")
+		// serialPrintHex(pages.resolveAddr(wholePhysicalStart))
+		// serialPrint("\n")
+		// serialPrintHex(pages.resolveAddr(wholePhysicalStart + 8888))
+		// serialPrint("\n")
+		// serialPrintHex(pages.resolveAddr(wholePhysicalStart + 4096 * 1000))
+		// serialPrint("\n")
+		// serialPrintHex(pages.resolveAddr(0xffff800000000000))
+		// serialPrint("\n")
+	}
+
+	setFramebuffer(params.framebuffer.ref)
+	setRamDisk(params.ramdisk.ref)
+
+	// TODO >>
+	// TODO move to SanityCheck
+	// TODO this seems not to work?!
+	if sizeOf<ArrayPointer<UInt8> >() == 4 {
+		serialPrintln("<Tofita> void*: 4 bytes")
+		// TODO QSOD
+	} else {
+		// Ok
+	}
+
+	if sizeOf<ArrayPointer<UInt8> >() == 8 {
+		serialPrintln("<Tofita> void*: 8 bytes")
+		// Ok
+	} else {
+		// TODO QSOD
+	}
+
+	drawLoadingVerbose("Initializing interrupts...", params.framebuffer.ref)
+	// disablePic() TODO should be disabled after APIC
+	setupInterruptsAndExceptions()
+	// TODO rename to initializeInterrupts()
+	enablePS2Mouse()
+
+	drawLoadingVerbose("Initializing GUI...", params.framebuffer.ref)
+	initText()
+	versionText = "Development copy. Build " + versionMajor + "." + versionMinor + "." + versionTag
+	initializeCompositor()
+	defaultSession.resize()
+
+	serialPrintln("<Tofita> quakePrintf(versionText.utf16())")
+	let versionText = "Greentea OS " + versionMajor + "." + versionMinor + "." + versionTag + " is loaded and operational\n"
+	quakePrintf(versionText.utf16())
+
+	// TODO enableLocalApic()
+
+	var megs Int32 = Math.round(params.ramBytes / (1024.0 * 1024.0))
+	quakePrintf("[CPU] '%s' '%s' %d MB RAM\n".utf16(), cpuid.vendorID, cpuid.brandName, megs)
+
+	if trapezePhysical > 1068032 {
+		// TODO exact address should be 0x8000u64?
+		serialPrintln("<Tofita> cannot allocate trapeze under 1 MB")
+		// TODO qsod may not work here yet, use verbose draw
+		qsod("Cannot allocate trapeze under 1 MB, got at %8\n".utf16(), trapezePhysical, 0)
+		while true {
+			pause()
+		}
+		// TODO test by >1 if it even renders this message
+	}
+
+	// NX bit
+	enableNX(cpuid)
+
+	// SMP trapeze
+	{
+		let asset RamDiskAsset = getRamDiskAsset("trapeze.tofita")
+		serialPrintf("Copy trapeze %d bytes\n", asset.size)
+		let trapeze = 0x8000u64 + wholePhysicalStart
+		// TODO why fixed address here? Wasn't it updated at BSP code?
+		tmemcpy(trapeze as! ArrayPointer<UInt8>, asset.data as! ConstArrayPointer<UInt8>, asset.size)
+	}
+
+	drawLoadingVerbose("Initializing ACPI...", params.framebuffer.ref)
+	// disablePic() TODO may be required before activation
+	if not ACPIParser.parse(params.acpiTablePhysical, cpuid, params.framebuffer.ref) {
+		quakePrintf("ACPI is *not* loaded, probably incompatible motherboard or outdated BIOS\n".utf16())
+	} else {
+		quakePrintf("ACPI 2.0 is loaded and ready\n".utf16())
+	}
+
+	// Quake-style console
+	quakeWelcome()
+
+	{
+		// TODO move to compositor/DWM
+		let a = getRamDiskAsset("root/Windows/Web/Wallpaper/Tofita/default.png")
+		wallpaperSource = loadPng32(a)
+		// TODO var bmp Bitmap32 = loadBitMap24(Buffer.fromBytes(a.data))
+		// ^ Buffer should not create a copy of data
+		setWallpaper(wallpaperSource, WallpaperStyle.Center)
+	}
+
+	// TODO var sandbox = sandbox.createSandbox()
+	drawLoadingVerbose("Initializing DWM...", params.framebuffer.ref)
+	initDwm()
+
+	drawLoadingVerbose("Initializing scheduler...", params.framebuffer.ref)
+	// Setup scheduling
+	currentThread = ThreadKind.THREAD_INIT
+	// FSBase is MSR 0xC0000100, GSBase is 0xC0000101, and EngineGSBase is 0xC0000102
+	// TODO same in trapeze
+	// TODO describe the purpose and save into global constant
+	wrmsr(0xC0000100u64, tibDestination)
+	wrmsr(0xC0000101u64, tibDestination)
+	wrmsr(0xC0000102u64, tibDestination)
+
+	// GUI engine thread
+	{
+		memset(guiThreadFrame as! ArrayPointer<UInt8>, 0, sizeOf<InterruptFrame>()) // Zeroing TODO sizeOf
+		memset(guiStack.ref, 0, stackSizeForEngineThread) // Zeroing
+		// TODO allocate stack with PhyAllocator
+
+		guiThreadFrame.ip = guiThreadStart as! UInt64
+		guiThreadFrame.cs = Selector.SYS_CODE64_SEL
+		// TODO allocate as physical memory
+		guiThreadFrame.sp = guiStack.ref as! UInt64 + stackSizeForEngineThread
+		guiThreadFrame.ss = Selector.SYS_DATA32_SEL
+
+		guiThreadFrame.es = Selector.SYS_DATA32_SEL
+		guiThreadFrame.ds = Selector.SYS_DATA32_SEL
+
+		// TODO gs/fs
+	}
+
+	// Main engine thread
+	{
+		// TODO InterruptFrame.fillWithZeros() in constructor
+		memset(engineThreadFrame as! ArrayPointer<UInt8>, 0, sizeOf<InterruptFrame>()) // Zeroing
+		memset(engineStack.ref, 0, stackSizeForEngineThread) // Zeroing
+
+		engineThreadFrame.ip = engineThreadStart as! UInt64
+		engineThreadFrame.cs = Selector.SYS_CODE64_SEL
+		engineThreadFrame.sp = engineStack as! UInt64 + stackSizeForEngineThread
+		engineThreadFrame.ss = Selector.SYS_DATA32_SEL
+
+		engineThreadFrame.es = Selector.SYS_DATA32_SEL
+		engineThreadFrame.ds = Selector.SYS_DATA32_SEL
+
+		// TODO gs/fs
+	}
+
+	// Idle process
+	{
+		// TODO must error `sizeOf(processes)`
+		// processes[0] = new TofitaProcess()
+		// TODO optimizer: set Array.capacity to 256 upfront cause known value `for i in 256 { arr[i] =`
+
+		// TODO this is entirely useless
+		for i in windowsLimit {
+			// TODO ^ remove this limit
+			let window = new OverlappedWindow()
+			window.present = false
+			windowsList[i] = window
+		}
+
+		// TODO make a engine a process too with ultimate priority
+		// TODO process.name = "Tofita"
+		// TODO idle process must have NxN threads, thread per CPU core?
+		let idle TofitaProcess = new TofitaProcess()
+		appendProcess(idle)
+		idle.frame = new InterruptFrame()
+		idle.pml4 = pml4entries // Save CR3 template to idle process
+		idle.schedulable = true // At idle schedule to idle process
+		idle.present = true
+		idle.syscallToHandle = TofitaSyscalls.Noop
+		idle.name = "System"
+		// TODO idle.name = "System Idle Process"
+		// TODO idle.name = "Tofita"? is idle process really required?
+		currentProcess = 0
+		pml4engineThread = processes[0].pml4
+	}
+
+	// Autoruns
+	// TODO should be done at main thread
+	// TODO use some kind of autorun.ini/.bat asset
+	if false {
+		for i in 4 {
+			if i == 0 {
+				continue
+			}
+
+			let guiProcess TofitaProcess = processCreate() // TODO just `new` and no `@struct`
+			serialPrintf("<Tofita> GUI process ID == %u\n", guiProcess.pid)
+			processInit(guiProcess)
+			disableSerial = 1
+			// TODO `@defer disableSerial = 0` <- `@` must have the lowest priority?
+			if i == 1 {
+				loadExeIntoProcess("desktop/demo32.exe", guiProcess)
+				guiProcess.name = "demo32.exe"
+			}
+
+			if i == 2 {
+				loadExeIntoProcess("desktop/demo64.exe", guiProcess)
+				guiProcess.name = "demo64.exe"
+			}
+
+			if i == 3 {
+				loadExeIntoProcess("desktop/calc64.exe", guiProcess)
+				guiProcess.name = "=== calc64.exe ==="
+			}
+
+			if i == 4 {
+				// loadExeIntoProcess("desktop/calc32.exe", guiProcess)
+			}
+
+			// TODO loadExeIntoProcess(""root/Windows/GreenteaGUI.exe", guiProcess)
+			// TODO guiProcess.name = "Greentea OS GUI"
+			guiProcess.schedulable = true
+		}
+	}
+
+	// Auto run
+	drawLoadingVerbose("Starting apps...", params.framebuffer.ref)
+	autoRun()
+
+	startupMilliseconds =
+		paramsCache.time.ref.hour * 60 * 60 * 1000 +
+		paramsCache.time.ref.minute * 60 * 1000 +
+		paramsCache.time.ref.second * 1000u64
+
+	// Show something before scheduling delay
+	composite(startupMilliseconds)
+	copyToScreen()
+	serialPrintln("<Tofita> [ready for scheduling]")
+	// TODO must disable scheduler until this function exits
+	// ^ currentThread = ThreadKind.THREAD_NOT_READY
+}
+
+@rename('__sync_synchronize')
+declare fun __sync_synchronize() Void
+
+/// Entry point of the project
+fun engineMain(params UefiPayload) {
+	// Initialization pseudo-thread
+	engineInit(params)
+
+	// This is probably useless but looks cool
+	__sync_synchronize()
+
+	// TODO composite here first frame!!!
+	// cause if crashes on hardware, at least it shows something
+
+	// sti -> start scheduling here
+	// It will erase whole stack on next scheduling
+	// TODO engine `yield`/`await`
+	// TODO de-allocate pre-thread after first yield
+	while true {
+		enableAllInterruptsAndHalt()
+	}
+	// TODO hexa: error if code present in unreachable block
+	// (no break/continue/throw)
+}
+
+// Data passed from UEFI
+@rename('engineParams') declare let engineParams UefiPayload
+
+// Entry point from trampoline.asm -> note that Hexa runtime runs before this code
+engineMain(engineParams)

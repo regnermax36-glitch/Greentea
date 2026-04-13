@@ -38,6 +38,10 @@ class GraphicalSession {
 	var taskbarSearch ColliderRectangle
 	var taskbarWindowList ColliderRectangle
 	var showStart = false
+	var wifiEnabled = true
+	var bluetoothEnabled = false
+	var systemVolume UInt8 = 80
+	var screenBrightness UInt8 = 100
 	var showTray = false
 	var desktopPeek Bool = false
 
@@ -214,6 +218,27 @@ class GraphicalSession {
 		}
 
 		if id == taskbarTrayOpener.id {
+		// Simple hit testing for quick settings
+		if event == ColliderEventType.MouseDown {
+			let ccX = _framebuffer.width - 320 - 12i16
+			let ccY = taskbarZone.relativeY - 400 - 12i16
+
+			if mouseX > ccX + 16 and mouseX < ccX + 320 - 16 {
+				if mouseY > ccY + 50 and mouseY < ccY + 110 {
+					// WiFi or Volume toggle
+					if mouseX < ccX + 160 { wifiEnabled = not wifiEnabled } else { systemVolume = (systemVolume + 20) % 120 }
+					requestAnimationFrame()
+				} else if mouseY > ccY + 210 and mouseY < ccY + 250 {
+					// Volume Slider
+					systemVolume = ((mouseX - (ccX + 16)) * 100 / 288) as! UInt8
+				} else if mouseY > ccY + 260 and mouseY < ccY + 300 {
+					// Brightness Slider
+					screenBrightness = ((mouseX - (ccX + 16)) * 100 / 288) as! UInt8
+					requestAnimationFrame()
+					requestAnimationFrame()
+				}
+			}
+		}
 			// TODO left mouse button only
 			if event == ColliderEventType.MouseUp {
 				showTray = not showTray
@@ -597,7 +622,7 @@ fun hintOfPin(id UInt64) String {
 }
 
 fun hintOfTaskbar(id UInt64) String {
-	// TODO Hexa: `switch id { case (defaultSession.taskbarStart.id): return "Start" }`
+	// TODO Hexa: `switch id { case (defaultSession.taskbarStart.id): return "Start 2027" }`
 	if defaultSession.taskbarStart.id == id {
 		return "Start"
 	}

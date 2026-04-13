@@ -576,7 +576,7 @@ fun initializeCompositor() {
 	{
 		let w1 = new Widget()
 		w1.title = "Weather"
-		w1.content = "22°C Sunny"
+		w1.content = "22C Sunny"
 		w1.width = 120
 		w1.height = 100
 		startWidgets.push(w1)
@@ -589,11 +589,18 @@ fun initializeCompositor() {
 		startWidgets.push(w2)
 
 		let w3 = new Widget()
-		w3.title = "System"
-		w3.content = "CPU: 12% RAM: 2.4GB"
-		w3.width = 252
+		w3.title = "Clock"
+		w3.content = "00:00"
+		w3.width = 120
 		w3.height = 100
 		startWidgets.push(w3)
+
+		let w4 = new Widget()
+		w4.title = "System"
+		w4.content = "Detecting..."
+		w4.width = 252
+		w4.height = 100
+		startWidgets.push(w4)
 	}
 
 	serialPrintln("[compositor.initializeCompositor] done")
@@ -1048,19 +1055,28 @@ fun composite(startupMilliseconds UInt64) {
 
 				if xx == 0 and yy == 0 {
 					drawBitmap32WithAlpha(trayWifi, atX + 12i16, atY + 12i16)
-					drawTextBox("WiFi", atX + 44i16, atY + 22i16, color.ref, bW - 44u16, 20, true)
+					drawTextBox(defaultSession.wifiEnabled ? "WiFi: On" : "WiFi: Off", atX + 44i16, atY + 22i16, color.ref, bW - 44u16, 20, true)
 				}
 				if xx == 1 and yy == 0 {
 					drawBitmap32WithAlpha(trayVolume, atX + 12i16, atY + 12i16)
-					drawTextBox("Volume", atX + 44i16, atY + 22i16, color.ref, bW - 44u16, 20, true)
+					drawTextBox("Volume: " + defaultSession.systemVolume + "%", atX + 44i16, atY + 22i16, color.ref, bW - 44u16, 20, true)
 				}
 			}
 		}
 
 		// Sliders placeholders
 		color.ref.rgba.ref.a = 100
+		// Volume Slider
 		drawVibrancedRectangleRounded(x + 16, y + 210, w - 32, 40, 20, darkTheme)
+		let volWidth = ((w - 32u16) * defaultSession.systemVolume as! UInt16) / 100u16
+		color.ref.color = 0x126099FF
+		drawRectangleWithAlpha(color.ref, x + 16, y + 210, volWidth, 40)
+		// Brightness Slider
 		drawVibrancedRectangleRounded(x + 16, y + 260, w - 32, 40, 20, darkTheme)
+		let brWidth = ((w - 32u16) * defaultSession.screenBrightness as! UInt16) / 100u16
+		color.ref.color = 0xFFFFFFFFu32
+		color.ref.rgba.ref.a = 150
+		drawRectangleWithAlpha(color.ref, x + 16, y + 260, brWidth, 40)
 	}
 	// Start
 	// TODO move to session
