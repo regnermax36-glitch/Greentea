@@ -1,0 +1,668 @@
+// The Tofita Engine
+// Copyright (C) 2023-2025 Oleh Petrenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// The state of the DWM
+class GraphicalSession {
+	// TODO probably user owns session, not the other way around? it's 1:1 after all
+	var user User // TODO `let`
+	// TODO use user name in Hello, dear NAME
+	// TODO Hexa: ensure theme is embedded (as struct by value) in allocation
+	let theme = new Theme()
+
+	// Clickable zones
+	// TODO move this rect to Desktop
+	var desktopZone ColliderRectangle
+	var popupZone ColliderRectangle = new ColliderRectangle(0, startHandler)
+	var startZone ColliderRectangle = new ColliderRectangle(0, startHandler)
+
+	// Taskbar
+	var taskbarZone ColliderRectangle
+	var taskbarStart ColliderRectangle
+	var taskbarPin ColliderRectangle
+	var taskbarDesktopPeek ColliderRectangle
+	var taskbarTime ColliderRectangle
+	var taskbarInput ColliderRectangle
+	var taskbarTrayOpener ColliderRectangle
+	var taskbarSearch ColliderRectangle
+	var taskbarWindowList ColliderRectangle
+	var showStart = false
+	var wifiEnabled = true
+	var bluetoothEnabled = false
+	var systemVolume UInt8 = 80
+	var screenBrightness UInt8 = 100
+	var showTray = false
+	var desktopPeek Bool = false
+
+	// Start menu
+	// TODO id could be set automatically by increment, and compared just by `r.id==id`
+	let startUser ColliderRectangle = new ColliderRectangle(1, startHandler)
+	let startDownloads ColliderRectangle = new ColliderRectangle(2, startHandler)
+	let startGallery ColliderRectangle = new ColliderRectangle(3, startHandler)
+	let startHome ColliderRectangle = new ColliderRectangle(4, startHandler)
+	let startSettings ColliderRectangle = new ColliderRectangle(5, startHandler)
+	let startPower ColliderRectangle = new ColliderRectangle(6, startHandler)
+	let startPins ColliderRectangle = new ColliderRectangle(7, startHandler)
+	let startApps ColliderRectangle = new ColliderRectangle(8, startHandler)
+	let startSearch ColliderRectangle = new ColliderRectangle(9, startHandler)
+
+	// TODO probably useless
+	var windowsZone ColliderRectangle
+
+	// Zones
+	var desktop Desktop
+
+	/// Desktop icons and selection rectangle
+	fun desktopHandle(id UInt64, event ColliderEventType) Void {
+		// TODO better idea
+		if event == ColliderEventType.MouseDown {
+			showStart = false
+			showTray = false
+		}
+
+		if event == ColliderEventType.MouseMove {
+			// TODO set mouse coordinates properly
+			handleMouseMoveDesktop(mouseX, mouseY)
+			return
+		}
+
+		if event == ColliderEventType.MouseDown, firstResponder == 0 {
+			// TODO set mouse coordinates ant event type properly
+			handleMouseDownDesktop(MouseActionType.LeftDown, mouseX, mouseY)
+			return
+		}
+
+		if event == ColliderEventType.MouseUp {
+			// TODO set mouse coordinates and event type properly
+			handleMouseUpDesktop(MouseActionType.LeftUp, mouseX, mouseY)
+			return
+		}
+
+		if event == ColliderEventType.DragStop {
+			// TODO set mouse coordinates ant event type properly
+			handleMouseUpDesktop(MouseActionType.LeftUp, mouseX, mouseY)
+			return
+		}
+	}
+
+	fun openFile(file String, displayName String) Void {
+		if file.utf16()[file.length - 1] as! UInt16 == 13u16 {
+			// Open the folder
+			new Files(file)
+			return
+		}
+		// TODO .dll This is a system file used by the apps.
+		if file.endsWith(".exe") {
+			let newProcess TofitaProcess = processCreate()
+			processInit(newProcess)
+			loadExeIntoProcess(file, newProcess)
+			newProcess.name = displayName
+			newProcess.icon16 = app16
+
+			let icon = getExeIconFromPath(file, 16)
+			if icon != null {
+				newProcess.icon16 = icon as! Bitmap32
+			}
+
+			if not file.endsWith('demo32.exe') and not file.endsWith('demo64.exe') {
+				newProcess.schedulable = true
+			} else {
+				newProcess.schedulable = true
+			}
+			// TODO Hexa: damn written like `} if file == "*:quake" {` instead of `} else if`
+		} else if file == "*:quake" {
+			haveToQuake = true
+		} else if file == "*:files" {
+			new Files("desktop" + '\r')
+		} else if file.endsWith(".ico") or file.endsWith(".png") or file.endsWith(".bmp") or file.endsWith(".jpg") {
+			new Viewer(file, displayName)
+		} else {
+			alert(
+				"Associated app is not defined for " + displayName + ". Feature may be incomplete."
+			)
+		}
+	}
+
+	fun startPinHandle(id UInt64, event ColliderEventType) Void {
+		if event == ColliderEventType.MouseUp {
+			showStart = false
+			showTray = false
+			// TODO Hexa: half-infer `startShortcuts` in just scopes, fill fields as `Infer({null})`
+			let startShortcuts = startShortcuts as! [Shortcut]
+			if let shortcut = startShortcuts[id] as! Shortcut? {
+				openFile(shortcut.file, shortcut.displayName)
+			}
+			requestAnimationFrame()
+		}
+	}
+
+	fun desktopShortcutHandle(id UInt64, event ColliderEventType) Void {
+		if isDoubleClick, event == ColliderEventType.MouseDown {
+			let desktopShortcuts = desktopShortcuts as! [Shortcut]
+			if let shortcut = desktopShortcuts[id] as! Shortcut? {
+				openFile(shortcut.file, shortcut.displayName)
+			}
+			requestAnimationFrame()
+		}
+	}
+
+	var taskbarResponder UInt64 = 0
+	var taskbarPrevious UInt64 = 0
+
+	/// Selects the clicked window that is shown on the taskbar
+	fun windowHandle(id UInt64, event ColliderEventType) Void {
+		// TODO better idea
+		if event == ColliderEventType.MouseDown {
+			showStart = false
+			showTray = false
+		}
+
+		if event == ColliderEventType.MouseDown {
+			taskbarResponder = id
+			taskbarPrevious = previousResponder
+		}
+
+		else if event == ColliderEventType.MouseUp {
+			// TODO non-raw click event from the collider engine
+			if taskbarResponder == id {
+				if let window = windowsList[taskbarResponder] {
+					if window.minimized {
+						firstResponder = id
+						// TODO responder must be collider to handle concept of focus and keyboard input
+						bringWindowToFront(firstResponder)
+						// TODO Hexa: must be null-safe
+						windowsList[id].minimized = false
+					} else {
+						if isFrontWindow(id) and taskbarPrevious == id {
+							// TODO make it `window.minimize()` and `minimize.toggleMinimized()`?
+							minimize(id)
+						} else {
+							firstResponder = id
+							bringWindowToFront(firstResponder)
+						}
+					}
+				}
+			}
+
+			requestAnimationFrame()
+			taskbarResponder = 0
+		}
+
+		else if event == ColliderEventType.DragStop {
+		}
+	}
+
+	/// Taskbar buttons like `Start`
+	fun taskbarHandle(id UInt64, event ColliderEventType) Void {
+		// TODO Hexa: switch over computable values like `case (taskbarStart.id):`
+		if id == taskbarStart.id {
+			// TODO left mouse button only
+			if event == ColliderEventType.MouseUp {
+				showStart = not showStart
+				showTray = false
+				requestAnimationFrame()
+				// TODO cover whole screen with clickable area to hide `Start`
+			}
+			return
+		}
+
+		if id == taskbarTrayOpener.id {
+		// Simple hit testing for quick settings
+		if event == ColliderEventType.MouseDown {
+			let ccX = _framebuffer.width - 320 - 12i16
+			let ccY = taskbarZone.relativeY - 400 - 12i16
+
+			if mouseX > ccX + 16 and mouseX < ccX + 320 - 16 {
+				if mouseY > ccY + 50 and mouseY < ccY + 110 {
+					// WiFi or Volume toggle
+					if mouseX < ccX + 160 { wifiEnabled = not wifiEnabled } else { systemVolume = (systemVolume + 20) % 120 }
+					requestAnimationFrame()
+				} else if mouseY > ccY + 210 and mouseY < ccY + 250 {
+					// Volume Slider
+					systemVolume = ((mouseX - (ccX + 16)) * 100 / 288) as! UInt8
+				} else if mouseY > ccY + 260 and mouseY < ccY + 300 {
+					// Brightness Slider
+					screenBrightness = ((mouseX - (ccX + 16)) * 100 / 288) as! UInt8
+					requestAnimationFrame()
+					requestAnimationFrame()
+				}
+			}
+		}
+			// TODO left mouse button only
+			if event == ColliderEventType.MouseUp {
+				showTray = not showTray
+				showStart = false
+				requestAnimationFrame()
+				// TODO cover whole screen with clickable area to hide `Tray`
+			}
+			return
+		}
+
+		if id == taskbarDesktopPeek.id {
+			// TODO MouseEnter
+			// TODO delay
+			if event == ColliderEventType.MouseMove {
+				desktopPeek = true
+				requestAnimationFrame()
+			} else if event == ColliderEventType.MouseUp {
+				for i in windowsLimit {
+					if let window = windowsList[i], i != 0, window.present, window.visible, not window.minimized {
+						minimize(i)
+					}
+				}
+
+				requestAnimationFrame()
+			}
+		}
+	}
+
+	/// Handle Start menu buttons
+	fun startHandle(id UInt64, event ColliderEventType) Void {
+		if event != ColliderEventType.MouseUp or id == 0 {
+			return
+		}
+
+		if id == startUser.id { openFile("*:startUser", "*:startUser") }
+		if id == startDownloads.id { openFile("*:startDownloads", "*:startDownloads") }
+		if id == startGallery.id { openFile("*:startGallery", "*:startGallery") }
+		if id == startHome.id { openFile("*:startHome", "*:startHome") }
+		if id == startSettings.id { openFile("*:startSettings", "*:startSettings") }
+		if id == startPower.id { openFile("*:startPower", "*:startPower") }
+		if id == startPins.id { return /* TODO scroll */ }
+		if id == startApps.id { openFile("*:startApps", "*:startApps") }
+		if id == startSearch.id { openFile("*:startSearch", "*:startSearch") }
+
+		showStart = false
+		showTray = false
+
+		requestAnimationFrame()
+	}
+
+	/// Set actual screen size dynamically
+	fun resize() {
+		let screenWidth Int16 = _framebuffer.width
+		let screenHeight Int16 = _framebuffer.height
+		taskbarZone.width = screenWidth
+		taskbarZone.relativeY = screenHeight - taskbarZone.height
+
+		desktopZone.width = screenWidth
+		desktopZone.height = screenHeight // Bottom is covered by taskbar
+
+		windowsZone.width = screenWidth
+		windowsZone.height = screenHeight
+
+		popupZone.width = screenWidth
+		popupZone.height = screenHeight
+
+		// Resize internal elements
+		taskbarDesktopPeek.relativeX = taskbarZone.width - taskbarDesktopPeek.width
+		// TODO taskbarSearch.relativeX = taskbarDesktopPeek.relativeX - taskbarSearch.width
+		// TODO taskbarTime.relativeX = taskbarSearch.relativeX - taskbarTime.width
+		taskbarTime.relativeX = taskbarDesktopPeek.relativeX - taskbarTime.width
+		taskbarInput.relativeX = taskbarTime.relativeX - taskbarInput.width
+		taskbarTrayOpener.relativeX = taskbarInput.relativeX - taskbarTrayOpener.width
+		taskbarSearch.relativeX = taskbarTrayOpener.relativeX - taskbarSearch.width
+		taskbarWindowList.width = index * (Theme.hugeTaskbar? 60i16 : 148i16); // /*TODO*/)
+		taskbarWindowList.relativeX = Theme.centeredStart? (_framebuffer.width / 2i16 - (taskbarWindowList.width / 2i16)) : (taskbarPin.relativeX + taskbarPin.width)
+	}
+
+	fun resizeWindowList() {
+		var index = 0
+		for i in taskbarWindowList.children.length {
+			let rectangle = taskbarWindowList.children[i]
+			if rectangle.enabled {
+				rectangle.height = Theme.hugeTaskbar? 40i16 : 32i16
+				rectangle.width = Theme.hugeTaskbar? 60i16 : 148i16
+				rectangle.relativeX = index * rectangle.width
+				index++
+			}
+		}
+	}
+
+	new (owner User) {
+		this.user = owner
+		// TODO Hexa: desktop should be pre-embed-allocated too
+		desktop = new Desktop()
+		desktopZone = new ColliderRectangle(0, desktopHandler)
+		taskbarZone = new ColliderRectangle(0, taskbarHandler)
+		windowsZone = new ColliderRectangle(0, windowHandler)
+
+		// TODO Hexa: well should error obviously `desktopHandler.hint = hintOfFile`
+		popupZone.children.push(startZone)
+		popupZone.clickable = false
+
+		// Start menu
+		{
+			startZone.enabled = false
+			startZone.children.push(startUser)
+			startZone.children.push(startDownloads)
+			startZone.children.push(startGallery)
+			startZone.children.push(startHome)
+			startZone.children.push(startSettings)
+			startZone.children.push(startPower)
+			startZone.children.push(startPins)
+			startZone.children.push(startApps)
+			startZone.children.push(startSearch)
+		}
+
+		// Taskbar
+		// taskbarZone.width = 256 TODO Hexa: infer as i16
+		taskbarZone.height = 40i16 // TODO 31 lol? related to <= in collider?
+
+		// Start button
+		{
+			let rectangle = new ColliderRectangle(1, taskbarHandler)
+			rectangle.width = 44i16 // TODO respect Theme.leavesPad
+			rectangle.height = 40i16 // TODO Meh just 32 is ok
+			rectangle.relativeX = 0
+			rectangle.relativeY = 1i16
+			taskbarZone.children.push(rectangle)
+			rectangle.hint = hintOfTaskbar
+			taskbarStart = rectangle
+		}
+
+		// Pins
+		{
+			let rectangle = new ColliderRectangle(2, taskbarHandler)
+			rectangle.width = 36i16
+			rectangle.height = 40i16 // TODO Always same as taskbar
+			// TODO make Start consistent with this?
+			rectangle.relativeX = 44i16 // TODO respect Start padding... actually just = start.w
+			// rectangle.relativeY = 0i16 // TODO Hexa: hint that this is same `0` value as class' default
+			taskbarZone.children.push(rectangle)
+			rectangle.hint = hintOfTaskbar
+			taskbarPin = rectangle
+			// TODO multiple pins
+			// TODO click actually opens (an associated) app
+			// (allow any file - welcoming readme by default)
+		}
+
+		// Tray
+		{
+			let rectangle = new ColliderRectangle(3, taskbarHandler)
+			rectangle.width = 4i16
+			rectangle.height = 40i16 // TODO Always same as taskbar
+			taskbarZone.children.push(rectangle)
+			rectangle.hint = hintOfTaskbar
+			taskbarDesktopPeek = rectangle
+
+			let rectangle = new ColliderRectangle(4, taskbarHandler)
+			rectangle.width = 64i16
+			rectangle.height = 40i16 // TODO Always same as taskbar
+			taskbarZone.children.push(rectangle)
+			rectangle.hint = hintOfTaskbar
+			taskbarTime = rectangle
+
+			let rectangle = new ColliderRectangle(5, taskbarHandler)
+			rectangle.width = 16i16 + 22i16
+			rectangle.height = 40i16 // TODO Always same as taskbar
+			taskbarZone.children.push(rectangle)
+			rectangle.hint = hintOfTaskbar
+			taskbarInput = rectangle
+
+			let rectangle = new ColliderRectangle(6, taskbarHandler)
+			rectangle.width = 12i16 + 20i16
+			rectangle.height = 40i16 // TODO Always same as taskbar
+			taskbarZone.children.push(rectangle)
+			rectangle.hint = hintOfTaskbar
+			taskbarTrayOpener = rectangle
+
+			let rectangle = new ColliderRectangle(7, taskbarHandler)
+			rectangle.width = 32i16
+			rectangle.height = 40i16 // TODO Always same as taskbar
+			taskbarZone.children.push(rectangle)
+			rectangle.hint = hintOfTaskbar
+			taskbarSearch = rectangle
+		}
+
+		// List of windows (this is a separate clickable zone)
+		{
+			// windowHandler by windowId, but this thing just taskbarHandler
+			let rectangle = new ColliderRectangle(7, taskbarHandler)
+			rectangle.height = 40i16 // TODO Always same as taskbar
+			rectangle.relativeX = taskbarPin.relativeX + taskbarPin.width
+			taskbarZone.children.push(rectangle)
+			taskbarWindowList = rectangle
+		}
+
+		// Desktop
+		// TODO maybe just set handler to null?
+		windowsZone.clickable = false
+	}
+
+	// TODO just mouseEvent?
+	// TODO actually handlers must be in DWM
+	fun mouseMove(mouseX Int16, mouseY Int16) Bool {
+		let event = ColliderEventType.MouseMove
+
+		// Popup is topmost
+		if popupZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		// Taskbar is next topmost
+		// TODO some global way to detect drag of any collider to ignore any other collider
+		let drag = drag as! Bool // TODO Hexa
+		if taskbarZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		// Windows go under taskbar
+		let windowId = findWindowUnderCursor(mouseX, mouseY)
+		if not drag, windowId != 0 {
+			ColliderRectangle.cancelHint()
+			ColliderRectangle.clearState()
+			return false // TODO call DWM
+		}
+
+		// Desktop icons
+		if desktopZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		// Fallback to DWM
+		return false
+	}
+
+	fun mouseUp(type MouseActionType, mouseX Int16, mouseY Int16) Bool {
+		ColliderRectangle.cancelHint()
+
+		let event = ColliderEventType.MouseUp // TODO left/ri/mi maybe just reuse MouseActionType?
+
+		// Popup is topmost
+		if popupZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		// Taskbar is next topmost
+		let drag = drag as! Bool // TODO Hexa
+		if taskbarZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		// Windows go under taskbar
+		let windowId = findWindowUnderCursor(mouseX, mouseY)
+		if not drag, windowId != 0 {
+			// TODO ColliderRectangle.clearState()
+			return false // TODO call DWM
+		}
+
+		// Desktop icons
+		if desktopZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		return false
+	}
+
+	fun mouseDown(type MouseActionType, mouseX Int16, mouseY Int16) Bool {
+		ColliderRectangle.cancelHint()
+
+		let event = ColliderEventType.MouseDown
+
+		// Popup is topmost
+		if popupZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		selectMouseNextResponder(mouseX, mouseY)
+
+		// Taskbar is next topmost
+		let drag = drag as! Bool // TODO Hexa
+		if not drag, taskbarZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		// Windows go under taskbar
+		let windowId = findWindowUnderCursor(mouseX, mouseY)
+		if not drag, windowId != 0 {
+			// TODO better idea, maybe currentPopup = Popup.Tray/Start?
+			showStart = false
+			showTray = false
+
+			ColliderRectangle.clearState()
+			return false // TODO call DWM
+		}
+
+		// Desktop icons
+		if desktopZone.trySendEvent(mouseX, mouseY, event) {
+			return true
+		}
+
+		return false
+	}
+}
+
+// TODO this is workaround
+fun cancelPeek(session Any) Void {
+	(session as! GraphicalSession).desktopPeek = false
+}
+
+// TODO Hexa: ensure `defaultUser` is initialized
+// ^ every module-level expression could have some number attached,
+// (also `static var/let`)
+// that means N-index in global order of expressions (same as import order)
+// and it will be enough just to compare current one with used external one
+// TODO proper dynamic init
+let defaultSession GraphicalSession = new GraphicalSession(defaultUser)
+// `let defaultSession = new GraphicalSession` inference bug
+
+// TODO Hexa: capturing lambdas
+fun desktopHandler(id UInt64, event ColliderEventType) Void {
+	defaultSession.desktopHandle(id, event)
+}
+
+fun desktopShortcutHandler(id UInt64, event ColliderEventType) Void {
+	defaultSession.desktopShortcutHandle(id, event)
+}
+
+// TODO Hexa: try those functions as `static fun`
+fun windowHandler(id UInt64, event ColliderEventType) Void {
+	defaultSession.windowHandle(id, event)
+}
+
+fun taskbarHandler(id UInt64, event ColliderEventType) Void {
+	defaultSession.taskbarHandle(id, event)
+}
+
+fun startHandler(id UInt64, event ColliderEventType) Void {
+	defaultSession.startHandle(id, event)
+}
+
+fun startPinHandler(id UInt64, event ColliderEventType) Void {
+	defaultSession.startPinHandle(id, event)
+}
+
+fun hintOfFile(id UInt64) String {
+	let shortcut = desktopShortcuts[id]
+
+	if shortcut == null {
+		return "Right click for more"
+	}
+
+	// TODO `case (computed_filesShortcutPath_let):`
+	if shortcut.file == "*:files" {
+		return "Browse your computer storage."
+	}
+
+	if shortcut.file == "*:trash" {
+		return "Contains deleted files and folders."
+	}
+
+	if shortcut.file == "*:quake" {
+		return "Console"
+	}
+
+	let asset = getRamDiskAsset(shortcut.file)
+
+	if asset.data != null /* TODO , asset.data.length > 0 */ {
+		// TODO more + comma separators
+		// TODO folder size 1 depth + `or more` / `and 5 nested folders`
+		return "Size: " + asset.size + " bytes"
+	}
+
+	// TODO hint for folders
+	return "Right click for more options"
+}
+
+fun hintOfPin(id UInt64) String {
+	let shortcut = startShortcuts[id]
+	return shortcut.displayName
+}
+
+fun hintOfTaskbar(id UInt64) String {
+	// TODO Hexa: `switch id { case (defaultSession.taskbarStart.id): return "Start 2027" }`
+	if defaultSession.taskbarStart.id == id {
+		return "Start"
+	}
+
+	if defaultSession.taskbarTrayOpener.id == id {
+		return "Show hidden icons"
+	}
+
+	if defaultSession.taskbarPin.id == id {
+		return "Pinned items"
+	}
+
+	if defaultSession.taskbarDesktopPeek.id == id {
+		return "Peek desktop"
+	}
+
+	if defaultSession.taskbarTime.id == id {
+		return "Clock"
+	}
+
+	if defaultSession.taskbarInput.id == id {
+		return "Keyboard"
+	}
+
+	if defaultSession.taskbarSearch.id == id {
+		return "Search"
+	}
+
+	// TODO taskbarDesktopPeek
+	// TODO taskbarTime
+	// TODO taskbarInput
+	// TODO taskbarSearch
+
+	return "Right click for more options"
+}
+
+fun hintOfWindow(id UInt64) String {
+	if let window = windowsList[id] {
+		return window.title
+	}
+
+	return "Right click for more options"
+}
