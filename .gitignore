@@ -42,3 +42,5 @@ $RECYCLE.BIN/
 # Include
 !Assets
 !Assets/**/*.*
+MaxRegnerOS/Injector/MaxRegnerOS_Injector/bin/
+MaxRegnerOS/Injector/MaxRegnerOS_Injector/obj/

@@ -1,0 +1,116 @@
+// The Tofita Engine
+// Copyright (C) 2022-2024 Oleh Petrenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+@emitHeader @linkAsIs
+declare fun guiThreadStart() Void
+
+var guiThreadFrame InterruptFrame = new InterruptFrame()
+@aligned(64)
+var guiStack ArrayByValue<UInt8, 1048576> = [0]
+
+/// Thread that handles user input and display
+/// Has enhanced low-latency scheduling
+fun guiThread() {
+	serialPrintln("<Tofita> [guiThread] thread started")
+
+	while true {
+		// TODO report as error useless boolean *statement* `haveToRender == false`
+		// TODO not the best place for this
+		if mouseActivity {
+			mouseActivity = false
+			handleMouseActivity()
+		}
+
+		if keyboardActivity {
+			keyboardActivity = false
+			handleKeyboardActivity()
+		}
+
+		// TODO better timers handling
+		if
+			let hintOwner = ColliderRectangle.hintOwner,
+			ColliderRectangle.hintReady == null,
+			ColliderRectangle.showHint != null and uptimeMilliseconds >= ColliderRectangle.showHintAfter
+		{
+			let text = ColliderRectangle.showHint(hintOwner.id)
+			ColliderRectangle.hintReady = text
+
+			// TODO reuse sizes logic
+			let measure = getTextAdvance(text)
+			let w = 6 * 2 + measure + 1
+			let h = 20u16
+
+			if mouseX + w >= Screen.width {
+				ColliderRectangle.hintX = Screen.width - w
+			} else {
+				ColliderRectangle.hintX = mouseX
+			}
+
+			if mouseY + 32 >= Screen.height {
+				// TODO exactly over the taskbar
+				ColliderRectangle.hintY = Screen.height - 32 - h
+			} else {
+				ColliderRectangle.hintY = mouseY + 18i16
+			}
+
+			// TODO hide hint when mouse over it
+			haveToRender = true
+		}
+
+		if haveToRenderMouseCursor == false and haveToRender == false {
+			yield()
+		}
+
+		// Overridden by `requestAnimationFrame`
+		let hadToRender = haveToRender
+		haveToRender = false
+
+		if hadToRender {
+			composite(startupMilliseconds)
+			copyToScreen()
+		} else if haveToRenderMouseCursor {
+			drawCursorBackplate()
+			let dirtyX = cursorDirtyX
+			let dirtyY = cursorDirtyY
+			let dirtyBottomX = cursorDirtyBottomX
+			let dirtyBottomY = cursorDirtyBottomY
+
+			invalidateCursorBackplate(mouseX as! UInt16, mouseY as! UInt16)
+			drawCursor(cur, mouseX as! UInt16, mouseY as! UInt16)
+
+			let startX = cursorDirtyX < dirtyX? cursorDirtyX : dirtyX
+			let startY = cursorDirtyY < dirtyY? cursorDirtyY : dirtyY
+			copyDirtyToScreen(
+				startX,
+				startY,
+				(cursorDirtyBottomX > dirtyBottomX? cursorDirtyBottomX : dirtyBottomX) as! Int16,
+				(cursorDirtyBottomY > dirtyBottomY? cursorDirtyBottomY : dirtyBottomY) as! Int16
+			)
+		}
+
+		// Lesser priority than full repaint
+		haveToRenderMouseCursor = false
+
+		while qsodHappened {
+			disableAllInterrupts()
+			halt()
+		}
+
+		// Note: it must yield, otherwise never enters an engine,
+		// because scheduler never switches to the engine from GUI thread
+		// This allows to have better FPS
+		yield()
+	}
+}
