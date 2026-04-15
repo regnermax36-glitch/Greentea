@@ -5,10 +5,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 @Composable
-fun MapLibreView(modifier: Modifier = Modifier) {
-    AndroidView(modifier = modifier, factory = { context ->
-        MapView(context).apply {
-            getMapAsync { map -> map.setStyle(Style.Builder().fromUri("asset://maxregner_style.json")) }
+fun MapLibreView(mapView: MapView, modifier: Modifier = Modifier) {
+    AndroidView(modifier = modifier, factory = { mapView }) { view ->
+        view.getMapAsync { map ->
+            if (map.style == null) {
+                map.setStyle(Style.Builder().fromUri("asset://maxregner_style.json"))
+            }
         }
-    })
+    }
 }
